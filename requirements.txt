@@ -1,0 +1,7 @@
+playwright
+pandas
+beautifulsoup4
+python-dotenv
+asyncio
+requests
+discord.py

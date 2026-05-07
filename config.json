@@ -1,0 +1,26 @@
+{
+  "accounts": [
+    "WatcherGuru",
+    "unusual_whales",
+    "DeFiIgnas",
+    "Cobie",
+    "VitalikButerin",
+    "cz_binance",
+    "whale_alert",
+    "WuBlockchain",
+    "tier10k",
+    "CryptoPanicCom"
+  ],
+  "keywords": [
+    "crypto",
+    "blockchain",
+    "DeFi",
+    "airdrop",
+    "listing",
+    "narrative",
+    "solana",
+    "ethereum"
+  ],
+  "max_tweets_per_search": 20,
+  "min_views_for_news": 50000
+}

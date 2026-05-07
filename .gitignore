@@ -1,0 +1,28 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Project artifacts
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+crypto_news_report.md
+
+# Legacy data dumps (giữ ở local, không commit)
+ticket_analytics*.csv
+ticket_analytics*.xlsx
+ticket_handling_time.xlsx
+sample_trans.html
+
+# Playwright login state
+x_user_data/
+
+# OS
+.DS_Store
