@@ -60,24 +60,26 @@ def generate_daily_report(target_date=None):
 
     local_start = start_utc.astimezone(config.LOCAL_TZ)
     local_end = end_utc.astimezone(config.LOCAL_TZ)
+    esc = config.html_escape
 
     lines = [
-        f"📊 *Daily Support Report — {local_end.strftime('%b %d, %Y')}*",
-        f"`{local_start.strftime('%Y-%m-%d %H:%M')} → {local_end.strftime('%Y-%m-%d %H:%M')} (UTC+7)`",
+        f"📊 <b>Daily Support Report — {esc(local_end.strftime('%b %d, %Y'))}</b>",
+        f"<code>{esc(local_start.strftime('%Y-%m-%d %H:%M'))} → "
+        f"{esc(local_end.strftime('%Y-%m-%d %H:%M'))} (UTC+7)</code>",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "",
         f"📥 Tickets Created:   {total_created}",
         f"✅ Tickets Resolved:   {total_resolved}",
         f"⏳ Still Open:          {still_open}",
         f"📈 Resolution Rate:    {resolution_rate:.1f}%",
-        f"⏱️ Avg Response Time:  {config.fmt_mins(avg_frt)}",
+        f"⏱️ Avg Response Time:  {esc(config.fmt_mins(avg_frt))}",
         "",
     ]
 
     # =====================================================
     # SECTION 2 — Agent Performance
     # =====================================================
-    lines.append("*👤 Agent Performance*")
+    lines.append("<b>👤 Agent Performance</b>")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     agent_names = ['TerrorMichael', 'Mikaelson', 'Dablendo']
@@ -89,7 +91,7 @@ def generate_daily_report(target_date=None):
         no_response = [t for t in on_shift if t['first_responded_at'] is None]
 
         lines.append(
-            f"• *{agent}*: {len(on_shift)} on-shift | "
+            f"• <b>{esc(agent)}</b>: {len(on_shift)} on-shift | "
             f"{len(responded)} responded | "
             f"{len(missed)} missed | "
             f"{len(no_response)} no reply"
@@ -98,13 +100,13 @@ def generate_daily_report(target_date=None):
     # Reus (optional agent, no shift)
     reus_responses = [t for t in created_tickets if t['agent_name'] == 'Reus']
     if reus_responses:
-        lines.append(f"• *Reus* (optional): {len(reus_responses)} responses (no assigned shift)")
+        lines.append(f"• <b>Reus</b> (optional): {len(reus_responses)} responses (no assigned shift)")
     lines.append("")
 
     # =====================================================
     # SECTION 3 — Response Time Breakdown
     # =====================================================
-    lines.append("*⏱️ Response Times*")
+    lines.append("<b>⏱️ Response Times</b>")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     responded_tickets = [t for t in created_tickets if t['response_time_mins'] is not None]
@@ -116,14 +118,14 @@ def generate_daily_report(target_date=None):
 
         sla_flag_slow = " ⚠️ SLA" if slowest['sla_breached'] else ""
         lines.append(
-            f"🏆 Fastest: `{fastest['ticket_id']}` — "
-            f"{config.fmt_mins(fastest['response_time_mins'])} "
-            f"(by {fastest['agent_name']})"
+            f"🏆 Fastest: <code>{esc(fastest['ticket_id'])}</code> — "
+            f"{esc(config.fmt_mins(fastest['response_time_mins']))} "
+            f"(by {esc(fastest['agent_name'])})"
         )
         lines.append(
-            f"🐢 Slowest: `{slowest['ticket_id']}` — "
-            f"{config.fmt_mins(slowest['response_time_mins'])} "
-            f"(by {slowest['agent_name']}){sla_flag_slow}"
+            f"🐢 Slowest: <code>{esc(slowest['ticket_id'])}</code> — "
+            f"{esc(config.fmt_mins(slowest['response_time_mins']))} "
+            f"(by {esc(slowest['agent_name'])}){sla_flag_slow}"
         )
         lines.append("")
 
@@ -134,25 +136,25 @@ def generate_daily_report(target_date=None):
             name = t['agent_name'] or 'Unknown'
             agent_frt.setdefault(name, []).append(t['response_time_mins'])
 
-        lines.append("📊 *Mean FRT per Agent:*")
+        lines.append("📊 <b>Mean FRT per Agent:</b>")
         for agent in sorted(agent_frt.keys()):
             vals = agent_frt[agent]
             mean_val = sum(vals) / len(vals)
             flag = " ✅" if mean_val <= config.SLA_FRT_THRESHOLD_MINS else " ⚠️"
-            lines.append(f"   {agent}: {config.fmt_mins(mean_val)}{flag}")
+            lines.append(f"   {esc(agent)}: {esc(config.fmt_mins(mean_val))}{flag}")
 
-        lines.append("📊 *Median FRT per Agent:*")
+        lines.append("📊 <b>Median FRT per Agent:</b>")
         for agent in sorted(agent_frt.keys()):
             vals = sorted(agent_frt[agent])
             med_val = stat_median(vals)
-            lines.append(f"   {agent}: {config.fmt_mins(med_val)}")
+            lines.append(f"   {esc(agent)}: {esc(config.fmt_mins(med_val))}")
 
-        lines.append("📊 *P90 FRT per Agent:*")
+        lines.append("📊 <b>P90 FRT per Agent:</b>")
         for agent in sorted(agent_frt.keys()):
             vals = sorted(agent_frt[agent])
             p90_idx = int(len(vals) * 0.9)
             p90_val = vals[min(p90_idx, len(vals) - 1)]
-            lines.append(f"   {agent}: {config.fmt_mins(p90_val)}")
+            lines.append(f"   {esc(agent)}: {esc(config.fmt_mins(p90_val))}")
     else:
         lines.append("No responses recorded in this period.")
     lines.append("")
@@ -160,7 +162,7 @@ def generate_daily_report(target_date=None):
     # =====================================================
     # SECTION 4 — SLA Compliance
     # =====================================================
-    lines.append(f"*🚦 SLA Compliance* (target: ≤ {config.SLA_FRT_THRESHOLD_MINS} min FRT)")
+    lines.append(f"<b>🚦 SLA Compliance</b> (target: ≤ {config.SLA_FRT_THRESHOLD_MINS} min FRT)")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     if responded_tickets:
@@ -189,13 +191,13 @@ def generate_daily_report(target_date=None):
             breach_info = ""
             if bad:
                 breach_ids = ", ".join(
-                    f"{t['ticket_id']} ({config.fmt_mins(t['response_time_mins'])})"
+                    f"{esc(t['ticket_id'])} ({esc(config.fmt_mins(t['response_time_mins']))})"
                     for t in bad[:3]  # Show max 3 breaches
                 )
                 breach_info = f" — breaches: {breach_ids}"
 
             lines.append(
-                f"   {agent}: {len(ok)}/{len(tickets_list)} "
+                f"   {esc(agent)}: {len(ok)}/{len(tickets_list)} "
                 f"({pct:.0f}%){star}{breach_info}"
             )
     else:
@@ -205,7 +207,7 @@ def generate_daily_report(target_date=None):
     # =====================================================
     # SECTION 5 — Additional Insights
     # =====================================================
-    lines.append("*🔍 Insights*")
+    lines.append("<b>🔍 Insights</b>")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     # Busiest / quietest hour
@@ -236,8 +238,8 @@ def generate_daily_report(target_date=None):
         cross_details = []
         for t in cross_shift_tickets[:3]:
             cross_details.append(
-                f"{t['agent_name']} covered for {t['on_duty_agent_name']} "
-                f"({t['ticket_id']})"
+                f"{esc(t['agent_name'])} covered for {esc(t['on_duty_agent_name'])} "
+                f"({esc(t['ticket_id'])})"
             )
         lines.append(f"🔄 Cross-Shift Help: {len(cross_shift_tickets)} ticket(s)")
         for d in cross_details:
@@ -277,7 +279,7 @@ def generate_daily_report(target_date=None):
     # SECTION 6 — Open Tickets Requiring Attention
     # =====================================================
     if open_tickets:
-        lines.append("*⏳ Open Tickets (Needs Action)*")
+        lines.append("<b>⏳ Open Tickets (Needs Action)</b>")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
         now_utc = datetime.now(tz=timezone.utc)
@@ -299,14 +301,15 @@ def generate_daily_report(target_date=None):
                 icon = "🟡"
                 status = "Responded, awaiting resolution"
 
-            on_duty = t.get('on_duty_agent_name', 'N/A')
+            on_duty = t.get('on_duty_agent_name') or 'N/A'
             lines.append(
-                f"{icon} `{t['ticket_id']}` — Open {config.fmt_mins(open_mins)} — "
-                f"{status} — On-duty: {on_duty}"
+                f"{icon} <code>{esc(t['ticket_id'])}</code> — "
+                f"Open {esc(config.fmt_mins(open_mins))} — "
+                f"{esc(status)} — On-duty: {esc(on_duty)}"
             )
         lines.append("")
 
-    lines.append("_KyberSwap Support Analytics_")
+    lines.append("<i>KyberSwap Support Analytics</i>")
     return "\n".join(lines)
 
 
@@ -315,22 +318,15 @@ def generate_daily_report(target_date=None):
 # =====================================================
 
 def send_telegram_message(text):
-    """Send a message to the configured Telegram group."""
+    """Send a message to every configured Telegram chat."""
     token = config.TELEGRAM_TOKEN
-    chat_id = config.TELEGRAM_CHAT_ID
+    chat_ids = config.TELEGRAM_CHAT_IDS
 
-    if not token or not chat_id:
-        print("⚠️  TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not set.")
+    if not token or not chat_ids:
+        print("⚠️  TELEGRAM_TOKEN or TELEGRAM_CHAT_ID(s) not set.")
         return
 
-    thread_id = None
-    if '/' in chat_id:
-        parts = chat_id.split('/')
-        chat_id, thread_id = parts[0], parts[1]
-    if not chat_id.startswith('-'):
-        chat_id = f"-100{chat_id}"
-
-    # Split long messages (Telegram limit: 4096 chars)
+    # Split long messages once (Telegram limit: 4096 chars)
     chunks = []
     if len(text) <= 4096:
         chunks = [text]
@@ -346,23 +342,32 @@ def send_telegram_message(text):
             chunks.append(current)
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    for i, chunk in enumerate(chunks):
-        payload = {
-            "chat_id": chat_id,
-            "text": chunk,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True,
-        }
-        if thread_id:
-            payload["message_thread_id"] = thread_id
+    for raw_chat_id in chat_ids:
+        chat_id = raw_chat_id
+        thread_id = None
+        if '/' in chat_id:
+            parts = chat_id.split('/')
+            chat_id, thread_id = parts[0], parts[1]
+        if not chat_id.startswith('-'):
+            chat_id = f"-100{chat_id}"
 
-        try:
-            r = requests.post(url, json=payload)
-            r.raise_for_status()
-            if i == len(chunks) - 1:
-                print("✅ Telegram daily report sent successfully!")
-        except Exception as e:
-            print(f"❌ Failed to send Telegram report: {e}")
+        for i, chunk in enumerate(chunks):
+            payload = {
+                "chat_id": chat_id,
+                "text": chunk,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }
+            if thread_id:
+                payload["message_thread_id"] = thread_id
+
+            try:
+                r = requests.post(url, json=payload)
+                r.raise_for_status()
+                if i == len(chunks) - 1:
+                    print(f"✅ Telegram daily report sent to {chat_id}")
+            except Exception as e:
+                print(f"❌ Failed to send Telegram report to {chat_id}: {e}")
 
 
 def send_report():

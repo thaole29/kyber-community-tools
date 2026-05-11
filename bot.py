@@ -187,6 +187,20 @@ async def on_message(message):
 
             print(f'[RESPONSE] {agent_name} responded in {rt} mins '
                   f'in #{tid}{status}')
+    else:
+        # Non-agent human message in a ticket channel — capture as the
+        # ticket owner's issue description for SLA alerts (idempotent).
+        if message.content:
+            saved = database.set_first_user_message(tid, message.content)
+            if saved:
+                print(f'[USER MSG] Captured first user message for #{tid}')
+
+        # Refresh last_user_msg_at and clear sla_alert_sent so the SLA
+        # loop re-evaluates the ticket from this new activity timestamp.
+        # No-op if ticket already has an agent response or is closed.
+        touched = database.touch_user_msg(tid, datetime.now(tz=timezone.utc))
+        if touched:
+            print(f'[USER MSG] Touched #{tid} for SLA re-check')
 
 
 @client.event
@@ -219,16 +233,22 @@ async def sla_check_loop():
         if not created_str:
             continue
 
-        created_dt = datetime.fromisoformat(created_str)
-        if created_dt.tzinfo is None:
-            created_dt = created_dt.replace(tzinfo=timezone.utc)
+        # Wait time is measured from the most recent user activity:
+        # last_user_msg_at if present, else fall back to created_at.
+        # This means an old open ticket only re-alerts after a NEW user message.
+        last_msg_str = ticket.get('last_user_msg_at')
+        ref_str = last_msg_str or created_str
+        ref_dt = datetime.fromisoformat(ref_str)
+        if ref_dt.tzinfo is None:
+            ref_dt = ref_dt.replace(tzinfo=timezone.utc)
 
-        minutes_waiting = (now - created_dt).total_seconds() / 60
+        minutes_waiting = (now - ref_dt).total_seconds() / 60
 
         if minutes_waiting > config.SLA_FRT_THRESHOLD_MINS:
-            on_duty = ticket.get('on_duty_agent_name', 'Unknown')
-            shift = ticket.get('shift_label', '?')
+            on_duty = ticket.get('on_duty_agent_name') or 'Unknown'
+            shift = ticket.get('shift_label') or '?'
             tid = ticket['ticket_id']
+            user_issue = ticket.get('first_user_message') or ''
 
             # Build shift time range for display
             shift_info = ""
@@ -237,14 +257,21 @@ async def sla_check_loop():
                     shift_info = f"{s['start']:02d}:00–{s['end']:02d}:00 UTC"
                     break
 
-            alert_msg = (
-                f"⏰ *SLA Alert — {tid}*\n"
-                f"Waiting: {int(minutes_waiting)} minutes "
-                f"(threshold: {config.SLA_FRT_THRESHOLD_MINS} min)\n"
-                f"On-duty: *{on_duty}* (Shift {shift}: {shift_info})"
-            )
+            wait_label = "Since last user msg" if last_msg_str else "Waiting"
 
-            send_telegram_alert(alert_msg)
+            esc = config.html_escape
+            parts = [
+                f"⏰ <b>SLA Alert — {esc(tid)}</b>",
+                "",
+                f"⏳ {wait_label}: {int(minutes_waiting)} minutes "
+                f"(threshold: {config.SLA_FRT_THRESHOLD_MINS} min)",
+                f"👤 On-duty: <b>{esc(on_duty)}</b> "
+                f"(Shift {esc(shift)}: {esc(shift_info)})",
+            ]
+            if user_issue:
+                parts.append(f'📝 User issue: "{esc(user_issue)}"')
+
+            send_telegram_alert("\n".join(parts))
             database.mark_sla_alert_sent(tid)
             print(f'[SLA ALERT] {tid} — {int(minutes_waiting)} min — {on_duty}')
 
@@ -255,37 +282,38 @@ async def before_sla_check():
 
 
 def send_telegram_alert(text):
-    """Send an alert message to the configured Telegram group."""
+    """Send an alert message to every configured Telegram chat."""
     token = config.TELEGRAM_TOKEN
-    chat_id = config.TELEGRAM_CHAT_ID
+    chat_ids = config.TELEGRAM_CHAT_IDS
 
-    if not token or not chat_id:
+    if not token or not chat_ids:
         print("⚠️  Telegram not configured — skipping SLA alert.")
         return
 
-    # Handle the "ID/Thread" format
-    thread_id = None
-    if '/' in chat_id:
-        parts = chat_id.split('/')
-        chat_id, thread_id = parts[0], parts[1]
-    if not chat_id.startswith('-'):
-        chat_id = f"-100{chat_id}"
-
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
-    }
-    if thread_id:
-        payload["message_thread_id"] = thread_id
-
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    try:
-        r = requests.post(url, json=payload)
-        r.raise_for_status()
-    except Exception as e:
-        print(f"❌ Failed to send Telegram alert: {e}")
+    for raw_chat_id in chat_ids:
+        chat_id = raw_chat_id
+        thread_id = None
+        if '/' in chat_id:
+            parts = chat_id.split('/')
+            chat_id, thread_id = parts[0], parts[1]
+        if not chat_id.startswith('-'):
+            chat_id = f"-100{chat_id}"
+
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        if thread_id:
+            payload["message_thread_id"] = thread_id
+
+        try:
+            r = requests.post(url, json=payload)
+            r.raise_for_status()
+        except Exception as e:
+            print(f"❌ Failed to send Telegram alert to {chat_id}: {e}")
 
 
 client.run(TOKEN)

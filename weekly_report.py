@@ -49,9 +49,11 @@ def generate_weekly_report(end_date=None):
     local_start = start_utc.astimezone(config.LOCAL_TZ)
     local_end = end_utc.astimezone(config.LOCAL_TZ)
 
+    esc = config.html_escape
     lines = [
-        f"📊 *Weekly Support Report*",
-        f"`{local_start.strftime('%b %d')} → {local_end.strftime('%b %d, %Y')} (UTC+7)`",
+        "📊 <b>Weekly Support Report</b>",
+        f"<code>{esc(local_start.strftime('%b %d'))} → "
+        f"{esc(local_end.strftime('%b %d, %Y'))} (UTC+7)</code>",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "",
     ]
@@ -70,7 +72,7 @@ def generate_weekly_report(end_date=None):
         arrow = "▲" if pct >= 0 else "▼"
         vol_change = f" ({arrow} {abs(pct):.0f}% vs last week)"
 
-    lines.append("*📥 Volume*")
+    lines.append("<b>📥 Volume</b>")
     lines.append(f"  Created:  {total_created}{vol_change}")
     lines.append(f"  Resolved: {total_resolved}")
     lines.append(f"  Open:     {still_open}")
@@ -84,13 +86,13 @@ def generate_weekly_report(end_date=None):
         day_tickets = [t for t in this_week
                        if t['created_at'] and day_start.isoformat() <= t['created_at'] < day_end.isoformat()]
         day_label = day_start.astimezone(config.LOCAL_TZ).strftime('%a %b %d')
-        lines.append(f"    {day_label}: {len(day_tickets)} tickets")
+        lines.append(f"    {esc(day_label)}: {len(day_tickets)} tickets")
     lines.append("")
 
     # =====================================================
     # SECTION 2 — Agent FRT Trends (This Week vs Last Week)
     # =====================================================
-    lines.append("*⏱️ Agent FRT Trends (This Week vs Last Week)*")
+    lines.append("<b>⏱️ Agent FRT Trends (This Week vs Last Week)</b>")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     agents = ['Dablendo', 'Mikaelson', 'TerrorMichael', 'Reus']
@@ -111,24 +113,24 @@ def generate_weekly_report(end_date=None):
             diff = tw_avg - pw_avg
             trend = "📉 improved" if diff < 0 else "📈 increased" if diff > 0 else "→ same"
             lines.append(
-                f"  *{agent}*: {config.fmt_mins(tw_avg)} avg "
-                f"(was {config.fmt_mins(pw_avg)}) — {trend}"
+                f"  <b>{esc(agent)}</b>: {esc(config.fmt_mins(tw_avg))} avg "
+                f"(was {esc(config.fmt_mins(pw_avg))}) — {trend}"
             )
-            lines.append(f"    Median: {config.fmt_mins(tw_med)} | "
+            lines.append(f"    Median: {esc(config.fmt_mins(tw_med))} | "
                          f"Tickets: {len(tw_frts)}")
         elif tw_avg is not None:
             lines.append(
-                f"  *{agent}*: {config.fmt_mins(tw_avg)} avg "
+                f"  <b>{esc(agent)}</b>: {esc(config.fmt_mins(tw_avg))} avg "
                 f"(no data last week) | Tickets: {len(tw_frts)}"
             )
         else:
-            lines.append(f"  *{agent}*: No responses this week")
+            lines.append(f"  <b>{esc(agent)}</b>: No responses this week")
     lines.append("")
 
     # =====================================================
     # SECTION 3 — Shift Load Balancing
     # =====================================================
-    lines.append("*⚖️ Shift Load Balancing*")
+    lines.append("<b>⚖️ Shift Load Balancing</b>")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     for shift_info in config.SHIFTS:
@@ -143,7 +145,8 @@ def generate_weekly_report(end_date=None):
                   if t['first_responded_at'] is not None and not t['on_duty_responded']]
 
         lines.append(
-            f"  Shift {label} ({agent}, {start_h:02d}:00–{end_h:02d}:00 UTC): "
+            f"  Shift {esc(label)} ({esc(agent)}, "
+            f"{start_h:02d}:00–{end_h:02d}:00 UTC): "
             f"{len(shift_tickets)} tickets | "
             f"{len(responded)} handled | {len(missed)} covered by others"
         )
@@ -152,7 +155,7 @@ def generate_weekly_report(end_date=None):
     # =====================================================
     # SECTION 4 — SLA Compliance Trend
     # =====================================================
-    lines.append(f"*🚦 SLA Compliance* (target: ≤ {config.SLA_FRT_THRESHOLD_MINS} min)")
+    lines.append(f"<b>🚦 SLA Compliance</b> (target: ≤ {config.SLA_FRT_THRESHOLD_MINS} min)")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     tw_responded = [t for t in this_week if t['response_time_mins'] is not None]
@@ -196,7 +199,7 @@ def generate_weekly_report(end_date=None):
         s = agent_sla[agent]
         pct = s['ok'] / s['total'] * 100 if s['total'] > 0 else 0
         star = " ⭐" if pct == 100 else ""
-        lines.append(f"    {agent}: {s['ok']}/{s['total']} ({pct:.0f}%){star}")
+        lines.append(f"    {esc(agent)}: {s['ok']}/{s['total']} ({pct:.0f}%){star}")
     lines.append("")
 
     # =====================================================
@@ -204,7 +207,7 @@ def generate_weekly_report(end_date=None):
     # =====================================================
     cross_shifts = [t for t in this_week if t['cross_shift_help']]
     if cross_shifts:
-        lines.append("*🔄 Cross-Shift Help*")
+        lines.append("<b>🔄 Cross-Shift Help</b>")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"  {len(cross_shifts)} ticket(s) handled by off-duty agents")
 
@@ -212,9 +215,9 @@ def generate_weekly_report(end_date=None):
         helper_counts = Counter(t['agent_name'] for t in cross_shifts)
         covered_counts = Counter(t['on_duty_agent_name'] for t in cross_shifts)
         for helper, cnt in helper_counts.most_common():
-            lines.append(f"    {helper} helped {cnt} time(s)")
+            lines.append(f"    {esc(helper)} helped {cnt} time(s)")
         for covered, cnt in covered_counts.most_common():
-            lines.append(f"    {covered} was covered {cnt} time(s)")
+            lines.append(f"    {esc(covered)} was covered {cnt} time(s)")
         lines.append("")
 
     # =====================================================
@@ -225,12 +228,12 @@ def generate_weekly_report(end_date=None):
     owner_counts = Counter(owners)
     repeat = {uid: cnt for uid, cnt in owner_counts.items() if cnt >= 3}
     if repeat:
-        lines.append("*🔁 Frequent Users (3+ tickets this week)*")
+        lines.append("<b>🔁 Frequent Users (3+ tickets this week)</b>")
         for uid, cnt in sorted(repeat.items(), key=lambda x: -x[1]):
-            lines.append(f"  • User {uid}: {cnt} tickets")
+            lines.append(f"  • User {esc(uid)}: {cnt} tickets")
         lines.append("")
 
-    lines.append("_KyberSwap Support Analytics — Weekly Summary_")
+    lines.append("<i>KyberSwap Support Analytics — Weekly Summary</i>")
     return "\n".join(lines)
 
 
@@ -239,22 +242,15 @@ def generate_weekly_report(end_date=None):
 # =====================================================
 
 def send_telegram_message(text):
-    """Send message to the configured Telegram group."""
+    """Send message to every configured Telegram chat."""
     token = config.TELEGRAM_TOKEN
-    chat_id = config.TELEGRAM_CHAT_ID
+    chat_ids = config.TELEGRAM_CHAT_IDS
 
-    if not token or not chat_id:
-        print("⚠️  TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not set.")
+    if not token or not chat_ids:
+        print("⚠️  TELEGRAM_TOKEN or TELEGRAM_CHAT_ID(s) not set.")
         return
 
-    thread_id = None
-    if '/' in chat_id:
-        parts = chat_id.split('/')
-        chat_id, thread_id = parts[0], parts[1]
-    if not chat_id.startswith('-'):
-        chat_id = f"-100{chat_id}"
-
-    # Split long messages
+    # Split long messages once
     chunks = []
     if len(text) <= 4096:
         chunks = [text]
@@ -270,23 +266,32 @@ def send_telegram_message(text):
             chunks.append(current)
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    for i, chunk in enumerate(chunks):
-        payload = {
-            "chat_id": chat_id,
-            "text": chunk,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True,
-        }
-        if thread_id:
-            payload["message_thread_id"] = thread_id
+    for raw_chat_id in chat_ids:
+        chat_id = raw_chat_id
+        thread_id = None
+        if '/' in chat_id:
+            parts = chat_id.split('/')
+            chat_id, thread_id = parts[0], parts[1]
+        if not chat_id.startswith('-'):
+            chat_id = f"-100{chat_id}"
 
-        try:
-            r = requests.post(url, json=payload)
-            r.raise_for_status()
-            if i == len(chunks) - 1:
-                print("✅ Telegram weekly report sent successfully!")
-        except Exception as e:
-            print(f"❌ Failed to send Telegram report: {e}")
+        for i, chunk in enumerate(chunks):
+            payload = {
+                "chat_id": chat_id,
+                "text": chunk,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }
+            if thread_id:
+                payload["message_thread_id"] = thread_id
+
+            try:
+                r = requests.post(url, json=payload)
+                r.raise_for_status()
+                if i == len(chunks) - 1:
+                    print(f"✅ Telegram weekly report sent to {chat_id}")
+            except Exception as e:
+                print(f"❌ Failed to send Telegram report to {chat_id}: {e}")
 
 
 def send_report():

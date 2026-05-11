@@ -16,9 +16,44 @@ load_dotenv()
 
 # --- Discord & Telegram Tokens ---
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+# Spec v2 standard name is TELEGRAM_BOT_TOKEN; legacy TELEGRAM_TOKEN kept as fallback.
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN') or os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-DAILY_REPORT_WEBHOOK_URL = os.getenv('DAILY_REPORT_WEBHOOK_URL')
+TELEGRAM_CHAT_ID_2 = os.getenv('TELEGRAM_CHAT_ID_2')
+
+# Broadcast list — every report/alert is sent to each chat id here.
+# Add a 3rd group later by exporting TELEGRAM_CHAT_ID_3 and appending below.
+TELEGRAM_CHAT_IDS = [cid for cid in [TELEGRAM_CHAT_ID, TELEGRAM_CHAT_ID_2] if cid]
+
+# --- LLM (community digest, Section 2) ---
+# Gemini is the current provider (free tier). ANTHROPIC_API_KEY is kept
+# for backward compat with archived spec v2; not used at runtime.
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+
+# =====================================================
+# COMMUNITY DIGEST CONFIG (Section 2)
+# =====================================================
+# Discord channel NAMES (without leading '#') to monitor for the daily
+# community discussion digest. Match against message.channel.name.
+COMMUNITY_CHANNELS = [
+    '🌎general-english',
+    '🆘community-support',
+    '💻devs-discussion',
+    '📈degen-speculation',
+    '🌌swap-aggregator',
+    '🧮limit-order',
+    '🌾kyber-earn',
+    '🏆kyberians-of-the-month',
+]
+
+# Cap messages fetched per channel per run; sample evenly if exceeded.
+COMMUNITY_MAX_MESSAGES_PER_CHANNEL = 100
+# Group consecutive messages from the same author within this window.
+COMMUNITY_BURST_WINDOW_SECS = 120
+# Skip messages shorter than this (in words) unless they are replies.
+COMMUNITY_MIN_WORDS = 5
 
 # --- Database & Legacy ---
 DB_FILE = 'tickets.db'
@@ -79,7 +114,7 @@ SHIFTS = [
 # =====================================================
 # SLA THRESHOLDS
 # =====================================================
-SLA_FRT_THRESHOLD_MINS = 30        # First Response Time target: ≤ 30 minutes
+SLA_FRT_THRESHOLD_MINS = 15        # First Response Time target: ≤ 15 minutes
 SLA_RESOLUTION_THRESHOLD_MINS = 1440  # Resolution target: ≤ 24 hours (1440 min)
 
 # =====================================================
@@ -97,6 +132,17 @@ def normalize_agent(name):
 def get_agent_name_by_id(user_id):
     """Look up canonical agent name from their Discord user ID."""
     return AGENT_DISCORD_IDS.get(str(user_id))
+
+
+# Reverse map (built once): canonical name → Discord user id
+_AGENT_NAME_TO_ID = {name: uid for uid, name in AGENT_DISCORD_IDS.items()}
+
+
+def get_agent_id_by_name(name):
+    """Look up Discord user ID from a canonical agent name."""
+    if not name:
+        return None
+    return _AGENT_NAME_TO_ID.get(name)
 
 
 def get_on_duty_agent(ticket_time_utc):
@@ -163,3 +209,18 @@ def fmt_mins(val):
     if h > 0:
         return f'{h}h {m}m'
     return f'{m}m {int((val % 1) * 60)}s'
+
+
+def html_escape(text):
+    """
+    Escape Telegram HTML-mode special chars: &, <, >.
+    Telegram HTML doesn't require escaping quotes outside of attributes.
+    """
+    if text is None:
+        return ''
+    return (
+        str(text)
+        .replace('&', '&amp;')
+        .replace('<', '&lt;')
+        .replace('>', '&gt;')
+    )

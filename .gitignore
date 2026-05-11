@@ -24,5 +24,8 @@ sample_trans.html
 # Playwright login state
 x_user_data/
 
+# Runtime logs
+logs/
+
 # OS
 .DS_Store

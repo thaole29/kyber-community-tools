@@ -14,7 +14,7 @@ echo "[DAILY UPDATE] Sending Telegram Notification..."
 # Run the Telegram notifier
 python3 -u telegram_notifier.py
 
-echo "[DAILY UPDATE] Sending Support Team Daily Report to Discord..."
+echo "[DAILY UPDATE] Sending Support Team Daily Report to Telegram..."
 # Run the daily support team report
 python3 -u daily_report.py
 

@@ -8,6 +8,7 @@ used by bot.py, reports, and backfill scripts.
 
 import sqlite3
 import os
+import json
 from datetime import datetime, timezone
 import config
 
@@ -21,7 +22,7 @@ def get_connection():
 
 
 def init_db():
-    """Create the tickets table if it doesn't exist."""
+    """Create the tickets table if it doesn't exist; apply additive migrations."""
     conn = get_connection()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS tickets (
@@ -37,14 +38,49 @@ def init_db():
             closed_by_agent       BOOLEAN,
             closed_at             TEXT,
             deleted_at            TEXT,
+            on_duty_agent_id      TEXT,
             on_duty_agent_name    TEXT,
             on_duty_responded     BOOLEAN DEFAULT 0,
             sla_breached          BOOLEAN DEFAULT 0,
             sla_alert_sent        BOOLEAN DEFAULT 0,
             cross_shift_help      BOOLEAN DEFAULT 0,
-            shift_label           TEXT
+            shift_label           TEXT,
+            first_user_message    TEXT,
+            last_user_msg_at      TEXT
         )
     """)
+
+    # Additive migrations for DBs created before these columns existed.
+    existing_cols = {row['name'] for row in conn.execute("PRAGMA table_info(tickets)")}
+    for col, ddl in (
+        ('on_duty_agent_id',   'TEXT'),
+        ('first_user_message', 'TEXT'),
+        ('last_user_msg_at',   'TEXT'),
+    ):
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE tickets ADD COLUMN {col} {ddl}")
+
+    # Backfill on_duty_agent_id from on_duty_agent_name on existing rows.
+    for agent_id, canonical_name in config.AGENT_DISCORD_IDS.items():
+        conn.execute(
+            "UPDATE tickets SET on_duty_agent_id = ? "
+            "WHERE on_duty_agent_name = ? AND on_duty_agent_id IS NULL",
+            (agent_id, canonical_name),
+        )
+
+    # Community digest storage (Section 2).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS community_digests (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            digest_date   TEXT NOT NULL,
+            channel       TEXT NOT NULL,
+            digest_json   TEXT NOT NULL,
+            message_count INTEGER,
+            created_at    TEXT NOT NULL,
+            UNIQUE (digest_date, channel)
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -59,16 +95,18 @@ def create_ticket(ticket_id, created_at_utc):
     created_at_utc should be a timezone-aware datetime in UTC.
     """
     shift_label, on_duty_agent = config.get_on_duty_agent(created_at_utc)
+    on_duty_agent_id = config.get_agent_id_by_name(on_duty_agent)
 
     conn = get_connection()
     try:
         conn.execute("""
             INSERT OR IGNORE INTO tickets
-                (ticket_id, created_at, on_duty_agent_name, shift_label)
-            VALUES (?, ?, ?, ?)
+                (ticket_id, created_at, on_duty_agent_id, on_duty_agent_name, shift_label)
+            VALUES (?, ?, ?, ?, ?)
         """, (
             ticket_id,
             created_at_utc.isoformat() if created_at_utc else None,
+            on_duty_agent_id,
             on_duty_agent,
             shift_label,
         ))
@@ -181,16 +219,18 @@ def close_ticket(ticket_id, closed_at_utc, closed_by=None, closed_by_agent=None)
         else:
             # Ticket we haven't seen — create a stub
             shift_label, on_duty_agent = config.get_on_duty_agent(closed_at_utc)
+            on_duty_agent_id = config.get_agent_id_by_name(on_duty_agent)
             conn.execute("""
                 INSERT OR IGNORE INTO tickets
                     (ticket_id, closed_at, closed_by, closed_by_agent,
-                     on_duty_agent_name, shift_label)
-                VALUES (?, ?, ?, ?, ?, ?)
+                     on_duty_agent_id, on_duty_agent_name, shift_label)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 ticket_id,
                 closed_at_utc.isoformat(),
                 closed_by,
                 closed_by_agent,
+                on_duty_agent_id,
                 on_duty_agent,
                 shift_label,
             ))
@@ -218,19 +258,51 @@ def mark_deleted(ticket_id, deleted_at_utc):
             )
         else:
             shift_label, on_duty_agent = config.get_on_duty_agent(deleted_at_utc)
+            on_duty_agent_id = config.get_agent_id_by_name(on_duty_agent)
             conn.execute("""
                 INSERT OR IGNORE INTO tickets
                     (ticket_id, closed_at, deleted_at,
-                     on_duty_agent_name, shift_label)
-                VALUES (?, ?, ?, ?, ?)
+                     on_duty_agent_id, on_duty_agent_name, shift_label)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 ticket_id,
                 deleted_at_utc.isoformat(),
                 deleted_at_utc.isoformat(),
+                on_duty_agent_id,
                 on_duty_agent,
                 shift_label,
             ))
         conn.commit()
+    finally:
+        conn.close()
+
+
+FIRST_USER_MSG_MAX_CHARS = 200
+
+
+def set_first_user_message(ticket_id, text):
+    """
+    Store the first user message for a ticket (used in SLA alerts).
+    No-op if a message is already stored, or if text is empty.
+    Trims to FIRST_USER_MSG_MAX_CHARS.
+    """
+    if not text:
+        return False
+    snippet = text.strip()
+    if not snippet:
+        return False
+    if len(snippet) > FIRST_USER_MSG_MAX_CHARS:
+        snippet = snippet[:FIRST_USER_MSG_MAX_CHARS - 1].rstrip() + '…'
+
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE tickets SET first_user_message = ? "
+            "WHERE ticket_id = ? AND (first_user_message IS NULL OR first_user_message = '')",
+            (snippet, ticket_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -244,6 +316,29 @@ def mark_sla_alert_sent(ticket_id):
             (ticket_id,)
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def touch_user_msg(ticket_id, ts):
+    """
+    Record a new user (non-agent) message in an open, unresponded ticket.
+    Stores ts in last_user_msg_at and resets sla_alert_sent so the SLA loop
+    can re-evaluate the ticket against the new activity timestamp.
+    No-op if ticket already has an agent response or is closed.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE tickets "
+            "SET last_user_msg_at = ?, sla_alert_sent = 0 "
+            "WHERE ticket_id = ? "
+            "  AND first_responded_at IS NULL "
+            "  AND closed_at IS NULL",
+            (ts.isoformat() if hasattr(ts, 'isoformat') else ts, ticket_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -388,5 +483,54 @@ def count_tickets():
     try:
         row = conn.execute("SELECT COUNT(*) as cnt FROM tickets").fetchone()
         return row['cnt']
+    finally:
+        conn.close()
+
+
+# =====================================================
+# COMMUNITY DIGEST STORAGE (Section 2)
+# =====================================================
+
+def save_community_digest(digest_date, channel, result):
+    """Persist (or replace) one channel's daily digest JSON."""
+    conn = get_connection()
+    try:
+        conn.execute("""
+            INSERT OR REPLACE INTO community_digests
+                (digest_date, channel, digest_json, message_count, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            digest_date,
+            channel,
+            json.dumps(result),
+            int(result.get('message_count', 0) or 0),
+            datetime.now(timezone.utc).isoformat(),
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_community_digests_in_range(start_date, end_date):
+    """
+    Return all stored digests whose digest_date is between start_date and
+    end_date (inclusive, ISO YYYY-MM-DD). Each row: {digest_date, channel, digest}.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT digest_date, channel, digest_json
+            FROM community_digests
+            WHERE digest_date >= ? AND digest_date <= ?
+            ORDER BY digest_date, channel
+        """, (start_date, end_date)).fetchall()
+        return [
+            {
+                'digest_date': r['digest_date'],
+                'channel': r['channel'],
+                'digest': json.loads(r['digest_json']),
+            }
+            for r in rows
+        ]
     finally:
         conn.close()
