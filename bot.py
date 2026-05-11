@@ -187,6 +187,37 @@ async def on_message(message):
 
             print(f'[RESPONSE] {agent_name} responded in {rt} mins '
                   f'in #{tid}{status}')
+
+            # Late-response alert: response happened AFTER the SLA window
+            # closed but BEFORE the 5-minute sla_check_loop could fire.
+            # Without this, breaches in the gap between threshold and the
+            # next loop tick go silent.
+            if (ticket and rt is not None
+                    and rt > config.SLA_FRT_THRESHOLD_MINS
+                    and not ticket.get('sla_alert_sent')):
+                shift = ticket.get('shift_label') or '?'
+                shift_info = ""
+                for s in config.SHIFTS:
+                    if s['label'] == shift:
+                        shift_info = f"{s['start']:02d}:00–{s['end']:02d}:00 UTC"
+                        break
+
+                esc = config.html_escape
+                parts = [
+                    f"⚠️ <b>SLA Breach (late response) — {esc(tid)}</b>",
+                    "",
+                    f"⏱️ Response time: {int(rt)} minutes "
+                    f"(threshold: {config.SLA_FRT_THRESHOLD_MINS} min)",
+                    f"👤 Responded by: <b>{esc(agent_name)}</b>",
+                    f"📋 On-duty: <b>{esc(on_duty)}</b> "
+                    f"(Shift {esc(shift)}: {esc(shift_info)})",
+                ]
+                if cross:
+                    parts.append("🔄 Cross-shift help")
+
+                send_telegram_alert("\n".join(parts))
+                database.mark_sla_alert_sent(tid)
+                print(f'[SLA LATE] {tid} — responded in {int(rt)} min — alert sent')
     else:
         # Non-agent human message in a ticket channel — capture as the
         # ticket owner's issue description for SLA alerts (idempotent).
