@@ -46,16 +46,20 @@ def init_db():
             cross_shift_help      BOOLEAN DEFAULT 0,
             shift_label           TEXT,
             first_user_message    TEXT,
-            last_user_msg_at      TEXT
+            last_user_msg_at      TEXT,
+            last_agent_msg_at     TEXT,
+            followup_alert_sent   BOOLEAN DEFAULT 0
         )
     """)
 
     # Additive migrations for DBs created before these columns existed.
     existing_cols = {row['name'] for row in conn.execute("PRAGMA table_info(tickets)")}
     for col, ddl in (
-        ('on_duty_agent_id',   'TEXT'),
-        ('first_user_message', 'TEXT'),
-        ('last_user_msg_at',   'TEXT'),
+        ('on_duty_agent_id',     'TEXT'),
+        ('first_user_message',   'TEXT'),
+        ('last_user_msg_at',     'TEXT'),
+        ('last_agent_msg_at',    'TEXT'),
+        ('followup_alert_sent',  'BOOLEAN DEFAULT 0'),
     ):
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE tickets ADD COLUMN {col} {ddl}")
@@ -117,9 +121,12 @@ def create_ticket(ticket_id, created_at_utc):
 
 def record_response(ticket_id, agent_name, agent_user_id, responded_at_utc):
     """
-    Record the first agent response to a ticket.
-    Computes FRT, on-duty match, and cross-shift help flag.
-    Only updates if first_responded_at is still NULL.
+    Record an agent message in a ticket.
+
+    Always updates last_agent_msg_at and clears followup_alert_sent so the
+    next user-wait cycle can re-alert. Additionally, if this is the FIRST
+    agent reply, computes FRT, on-duty match, cross-shift flag, and sets
+    first_responded_at. Returns True only when it recorded the first reply.
     """
     conn = get_connection()
     try:
@@ -130,8 +137,16 @@ def record_response(ticket_id, agent_name, agent_user_id, responded_at_utc):
         if not row:
             return False
 
+        # Always log this agent activity and reset follow-up dedupe.
+        conn.execute(
+            "UPDATE tickets SET last_agent_msg_at = ?, followup_alert_sent = 0 "
+            "WHERE ticket_id = ?",
+            (responded_at_utc.isoformat(), ticket_id),
+        )
+
         if row['first_responded_at'] is not None:
-            return False  # Already has a first response
+            conn.commit()
+            return False  # Already has a first response — but bookkeeping above did run
 
         # Compute response time
         response_mins = None
@@ -322,23 +337,40 @@ def mark_sla_alert_sent(ticket_id):
 
 def touch_user_msg(ticket_id, ts):
     """
-    Record a new user (non-agent) message in an open, unresponded ticket.
-    Stores ts in last_user_msg_at and resets sla_alert_sent so the SLA loop
-    can re-evaluate the ticket against the new activity timestamp.
-    No-op if ticket already has an agent response or is closed.
+    Record a new user (non-agent) message in an open ticket. Always updates
+    last_user_msg_at. Also resets alert-dedupe flags so the SLA loop can
+    re-evaluate against this fresh activity:
+      - sla_alert_sent: only reset if no first agent reply yet (Phase 1).
+      - followup_alert_sent: always reset (Phase 2 — agent has replied once
+        and user is now pinging again).
+    No-op if the ticket is closed.
     """
     conn = get_connection()
     try:
         cur = conn.execute(
             "UPDATE tickets "
-            "SET last_user_msg_at = ?, sla_alert_sent = 0 "
-            "WHERE ticket_id = ? "
-            "  AND first_responded_at IS NULL "
-            "  AND closed_at IS NULL",
+            "SET last_user_msg_at = ?, "
+            "    sla_alert_sent = CASE WHEN first_responded_at IS NULL "
+            "                          THEN 0 ELSE sla_alert_sent END, "
+            "    followup_alert_sent = 0 "
+            "WHERE ticket_id = ? AND closed_at IS NULL",
             (ts.isoformat() if hasattr(ts, 'isoformat') else ts, ticket_id),
         )
         conn.commit()
         return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_followup_alert_sent(ticket_id):
+    """Mark that a follow-up SLA alert has been sent for this ticket."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE tickets SET followup_alert_sent = 1 WHERE ticket_id = ?",
+            (ticket_id,)
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -360,6 +392,32 @@ def get_open_tickets_needing_alert():
               AND created_at IS NOT NULL
               AND closed_at IS NULL
               AND sla_alert_sent = 0
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_followup_breach_candidates():
+    """
+    Find tickets where:
+      - the first agent reply has already happened, AND
+      - the user has posted a newer message since the latest agent reply
+        (or the ticket has no recorded agent activity timestamp), AND
+      - we haven't sent a follow-up alert yet for this wait cycle.
+
+    The caller compares (now - last_user_msg_at) against the SLA threshold
+    to decide whether to alert.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT * FROM tickets
+            WHERE first_responded_at IS NOT NULL
+              AND closed_at IS NULL
+              AND last_user_msg_at IS NOT NULL
+              AND (last_agent_msg_at IS NULL OR last_user_msg_at > last_agent_msg_at)
+              AND followup_alert_sent = 0
         """).fetchall()
         return [dict(r) for r in rows]
     finally:

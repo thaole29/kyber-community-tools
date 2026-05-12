@@ -306,6 +306,50 @@ async def sla_check_loop():
             database.mark_sla_alert_sent(tid)
             print(f'[SLA ALERT] {tid} — {int(minutes_waiting)} min — {on_duty}')
 
+    # =====================================================
+    # PHASE 2 — Follow-up SLA
+    # Tickets where the first reply already happened but the user has
+    # posted again and is still waiting on a follow-up response.
+    # =====================================================
+    followup_candidates = database.get_followup_breach_candidates()
+    for ticket in followup_candidates:
+        last_user_str = ticket.get('last_user_msg_at')
+        if not last_user_str:
+            continue
+        ref_dt = datetime.fromisoformat(last_user_str)
+        if ref_dt.tzinfo is None:
+            ref_dt = ref_dt.replace(tzinfo=timezone.utc)
+
+        minutes_waiting = (now - ref_dt).total_seconds() / 60
+        if minutes_waiting <= config.SLA_FRT_THRESHOLD_MINS:
+            continue
+
+        # On-duty is the agent CURRENTLY on shift (when the follow-up SLA
+        # fires), not the one who was on shift when the ticket was opened.
+        current_shift, current_on_duty = config.get_on_duty_agent(now)
+        on_duty = current_on_duty or 'Unknown'
+        shift = current_shift or '?'
+        tid = ticket['ticket_id']
+
+        shift_info = ""
+        for s in config.SHIFTS:
+            if s['label'] == shift:
+                shift_info = f"{s['start']:02d}:00–{s['end']:02d}:00 UTC"
+                break
+
+        esc = config.html_escape
+        parts = [
+            f"⏰ <b>Follow-up SLA Alert — {esc(tid)}</b>",
+            "",
+            f"⏳ User waiting for follow-up: {int(minutes_waiting)} min "
+            f"(threshold: {config.SLA_FRT_THRESHOLD_MINS} min)",
+            f"📋 On-duty: <b>{esc(on_duty)}</b> "
+            f"(Shift {esc(shift)}: {esc(shift_info)})",
+        ]
+        send_telegram_alert("\n".join(parts))
+        database.mark_followup_alert_sent(tid)
+        print(f'[FOLLOWUP SLA] {tid} — waiting {int(minutes_waiting)} min — on-duty: {on_duty}')
+
 
 @sla_check_loop.before_loop
 async def before_sla_check():
