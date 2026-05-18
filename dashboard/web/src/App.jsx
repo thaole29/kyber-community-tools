@@ -659,12 +659,14 @@ function fmtUtcDate(d) {
   return d.toISOString().slice(0, 10);
 }
 
+const PRESET_DAYS = { "7d": 7, "14d": 14, "30d": 30 };
+
 function rangeToParams(range, custom) {
   const today = new Date();
   const todayUtc = fmtUtcDate(today);
   if (range === "24h") return null;
-  if (range === "7d" || range === "30d") {
-    const days = range === "7d" ? 7 : 30;
+  if (PRESET_DAYS[range]) {
+    const days = PRESET_DAYS[range];
     const start = new Date(today.getTime() - (days - 1) * 86400000);
     return { start: fmtUtcDate(start), end: todayUtc };
   }
@@ -688,9 +690,9 @@ async function detectMode() {
 
 async function fetchData(mode, range, custom) {
   if (mode === "snapshot") {
-    // Snapshot mode only knows the 3 preset ranges. Custom range falls
-    // back to the longest available (30d) with a hint to the user.
-    const key = ["24h", "7d", "30d"].includes(range) ? range : "30d";
+    // Snapshot mode only knows the pre-built ranges. Anything else falls
+    // back to the longest available (30d).
+    const key = ["24h", "7d", "14d", "30d"].includes(range) ? range : "30d";
     const [c, s] = await Promise.all([
       fetch(`./data/community_${key}.json`, { cache: "no-store" }).then(r => {
         if (!r.ok) throw new Error(`community_${key} ${r.status}`);
@@ -723,6 +725,7 @@ function RangeFilter({ range, setRange, custom, setCustom, loading, mode }) {
   const presets = [
     { id: "24h", label: "24 hours" },
     { id: "7d",  label: "7 days" },
+    { id: "14d", label: "14 days" },
     { id: "30d", label: "30 days" },
     { id: "custom", label: "Custom" },
   ];

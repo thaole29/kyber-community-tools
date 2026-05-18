@@ -38,6 +38,7 @@ OUT_DIR = PROJECT_DIR / 'dashboard' / 'web' / 'public' / 'data'
 RANGES = [
     ('24h', timedelta(hours=24), 'Last 24 hours'),
     ('7d',  timedelta(days=7),   'Last 7 days'),
+    ('14d', timedelta(days=14),  'Last 14 days'),
     ('30d', timedelta(days=30),  'Last 30 days'),
 ]
 
