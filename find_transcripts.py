@@ -1,7 +1,7 @@
 import discord
 
-TOKEN = '<REDACTED_DISCORD_TOKEN>'
-
+import config
+TOKEN = config.DISCORD_TOKEN
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 

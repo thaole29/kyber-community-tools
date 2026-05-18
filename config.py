@@ -174,6 +174,103 @@ def get_on_duty_agent(ticket_time_utc):
     return None, None  # Should never happen with full coverage
 
 
+def _next_shift_boundary(dt):
+    """Given a UTC datetime, return the next shift transition time after `dt`.
+    Used to walk shift segments when splitting FRT across handoffs.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    # Build the list of UTC hours where a shift starts/ends (these are the
+    # transition points). From SHIFTS, transitions are at hours 2, 9, 17.
+    transitions = sorted({s["start"] for s in SHIFTS} | {s["end"] for s in SHIFTS})
+    today_midnight = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    for offset_days in (0, 1):
+        for h in transitions:
+            cand = today_midnight + timedelta(days=offset_days, hours=h)
+            if cand > dt:
+                return cand
+    # Should never happen with our 3-shift, 24h coverage
+    return dt + timedelta(hours=1)
+
+
+def compute_frt_contributions(start_dt, end_dt, responding_agent=None):
+    """Walk [start_dt, end_dt] across shift boundaries; return a list of
+    {agent, mins, type} entries.
+
+    `start_dt` is the moment the wait began (typically `last_user_msg_at`,
+    falling back to `created_at`). `end_dt` is the first agent reply
+    (`first_responded_at`). Both must be timezone-aware UTC.
+
+    Each segment's `type` is:
+      - 'responded'  : segment whose end is `end_dt` AND whose shift agent
+                       matches `responding_agent`. This is the cross-help
+                       (or on-shift) agent's contribution.
+      - 'missed'     : any earlier segment whose shift agent did NOT respond
+                       during their shift before it ended. Agent is "blamed"
+                       for the time the user was waiting on their watch.
+
+    Cross-shift split (the case the user described):
+      Ticket waits during Shift X → X ends → Shift Y agent eventually replies.
+      X agent gets `shift_end_X - start_dt` minutes (type=missed).
+      Y agent gets `end_dt - shift_start_Y` minutes (type=responded).
+
+    Returns [] if start_dt >= end_dt or either is None.
+    """
+    if not start_dt or not end_dt:
+        return []
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=timezone.utc)
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.replace(tzinfo=timezone.utc)
+    if start_dt >= end_dt:
+        return []
+
+    contributions = []
+    cursor = start_dt
+    while cursor < end_dt:
+        shift_label, shift_agent = get_on_duty_agent(cursor)
+        boundary = _next_shift_boundary(cursor)
+        segment_end = min(boundary, end_dt)
+        mins = (segment_end - cursor).total_seconds() / 60.0
+        is_final = segment_end >= end_dt
+        if is_final and (responding_agent is None or shift_agent == responding_agent):
+            seg_type = 'responded'
+        else:
+            # Final segment whose shift agent doesn't match the responder is
+            # still a 'missed' contribution — the responder was helping cross-
+            # shift, and this on-duty agent should have caught it.
+            seg_type = 'missed'
+        contributions.append({
+            'agent': shift_agent,
+            'shift_label': shift_label,
+            'mins': round(mins, 2),
+            'type': seg_type,
+        })
+        cursor = segment_end
+
+    # If the responding agent helped cross-shift (none of the segments are
+    # tagged 'responded'), tag the FINAL segment as 'cross_help' for that
+    # responder. We still record the on-duty agent's miss for that segment;
+    # the responder's true contribution is appended separately so their pool
+    # gets credited.
+    if responding_agent and not any(c['type'] == 'responded' for c in contributions):
+        # The cross-help portion is the FINAL segment's minutes — that's the
+        # time between the responder's shift start (or simply: end_dt minus
+        # boundary) and end_dt. Since we already attributed those minutes to
+        # the on-duty agent as 'missed', also append a parallel 'cross_help'
+        # entry for the actual responder so their FRT pool reflects it.
+        final = contributions[-1]
+        contributions.append({
+            'agent': responding_agent,
+            'shift_label': None,
+            'mins': final['mins'],
+            'type': 'cross_help',
+        })
+    return contributions
+
+
 def parse_dt(val):
     """Parse a datetime string into a timezone-aware datetime (local tz)."""
     if pd.isna(val) or not val:

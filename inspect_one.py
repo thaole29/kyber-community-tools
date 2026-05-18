@@ -2,7 +2,8 @@ import discord
 import aiohttp
 import asyncio
 
-TOKEN = '<REDACTED_DISCORD_TOKEN>'
+import config
+TOKEN = config.DISCORD_TOKEN
 CH_NAME = 'archieved'
 
 intents = discord.Intents.default()

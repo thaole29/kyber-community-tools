@@ -29,3 +29,10 @@ logs/
 
 # OS
 .DS_Store
+
+# Dashboard frontend build artifacts + node_modules
+dashboard/web/node_modules/
+dashboard/web/dist/
+
+# Cron success markers
+logs/.markers/

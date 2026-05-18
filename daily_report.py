@@ -17,9 +17,22 @@ import os
 import requests
 from datetime import datetime, timedelta, timezone
 from collections import Counter
+from pathlib import Path
 
 import config
 import database
+import metrics
+
+# Success marker for safety-net check in bot.py — see _safety_net_loop().
+# bot.py looks for this file each day after the cron window; if missing,
+# it reruns the report. Format: logs/.markers/daily_report.success.<UTC date>
+MARKER_DIR = Path(__file__).resolve().parent / 'logs' / '.markers'
+
+
+def _touch_marker():
+    MARKER_DIR.mkdir(parents=True, exist_ok=True)
+    today = datetime.now(tz=timezone.utc).date().isoformat()
+    (MARKER_DIR / f'daily_report.success.{today}').touch()
 
 
 def generate_daily_report(target_date=None):
@@ -77,30 +90,37 @@ def generate_daily_report(target_date=None):
     ]
 
     # =====================================================
-    # SECTION 2 — Agent Performance
+    # SECTION 2 — Agent Performance (FRT split applies)
     # =====================================================
     lines.append("<b>👤 Agent Performance</b>")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+    # Per-agent split aggregation — accounts for cross-shift handoffs.
+    # An agent's "missed" counts ticket-segments waiting on their watch.
+    per_agent = metrics.aggregate_per_agent(created_tickets)
     agent_names = ['TerrorMichael', 'Mikaelson', 'Dablendo']
     for agent in agent_names:
-        on_shift = [t for t in created_tickets if t['on_duty_agent_name'] == agent]
-        responded = [t for t in on_shift if t['on_duty_responded']]
-        missed = [t for t in on_shift
-                  if t['first_responded_at'] is not None and not t['on_duty_responded']]
-        no_response = [t for t in on_shift if t['first_responded_at'] is None]
-
+        a = per_agent.get(agent, {})
+        on_shift = a.get('on_shift', 0)
+        no_response = sum(
+            1 for t in created_tickets
+            if t['on_duty_agent_name'] == agent
+            and t['first_responded_at'] is None
+        )
         lines.append(
-            f"• <b>{esc(agent)}</b>: {len(on_shift)} on-shift | "
-            f"{len(responded)} responded | "
-            f"{len(missed)} missed | "
-            f"{len(no_response)} no reply"
+            f"• <b>{esc(agent)}</b>: {on_shift} on-shift | "
+            f"{a.get('responded', 0)} responded | "
+            f"{a.get('missed', 0)} missed | "
+            f"{no_response} no reply | "
+            f"{a.get('cross_help', 0)} cross-help"
         )
 
-    # Reus (optional agent, no shift)
-    reus_responses = [t for t in created_tickets if t['agent_name'] == 'Reus']
-    if reus_responses:
-        lines.append(f"• <b>Reus</b> (optional): {len(reus_responses)} responses (no assigned shift)")
+    # Reus (optional agent, no shift) — credited via cross_help in per_agent.
+    reus = per_agent.get('Reus')
+    if reus and reus.get('cross_help', 0):
+        lines.append(
+            f"• <b>Reus</b> (optional): {reus['cross_help']} cross-help responses"
+        )
     lines.append("")
 
     # =====================================================
@@ -129,32 +149,30 @@ def generate_daily_report(target_date=None):
         )
         lines.append("")
 
-        # Per-agent mean, median, p90
-        from statistics import median as stat_median
-        agent_frt = {}
-        for t in responded_tickets:
-            name = t['agent_name'] or 'Unknown'
-            agent_frt.setdefault(name, []).append(t['response_time_mins'])
+        # Per-agent mean / median / p90 — using FRT split. Each agent's
+        # pool includes BOTH their own response time AND time the user
+        # waited on their watch when someone else ended up responding.
+        lines.append("📊 <b>Mean FRT per Agent</b> (shift-split):")
+        for agent in sorted(per_agent.keys()):
+            s = metrics.summarize(per_agent[agent])
+            if s['avg_frt'] is None:
+                continue
+            flag = " ✅" if s['avg_frt'] <= config.SLA_FRT_THRESHOLD_MINS else " ⚠️"
+            lines.append(f"   {esc(agent)}: {esc(config.fmt_mins(s['avg_frt']))}{flag}")
 
-        lines.append("📊 <b>Mean FRT per Agent:</b>")
-        for agent in sorted(agent_frt.keys()):
-            vals = agent_frt[agent]
-            mean_val = sum(vals) / len(vals)
-            flag = " ✅" if mean_val <= config.SLA_FRT_THRESHOLD_MINS else " ⚠️"
-            lines.append(f"   {esc(agent)}: {esc(config.fmt_mins(mean_val))}{flag}")
+        lines.append("📊 <b>Median FRT per Agent</b> (shift-split):")
+        for agent in sorted(per_agent.keys()):
+            s = metrics.summarize(per_agent[agent])
+            if s['median_frt'] is None:
+                continue
+            lines.append(f"   {esc(agent)}: {esc(config.fmt_mins(s['median_frt']))}")
 
-        lines.append("📊 <b>Median FRT per Agent:</b>")
-        for agent in sorted(agent_frt.keys()):
-            vals = sorted(agent_frt[agent])
-            med_val = stat_median(vals)
-            lines.append(f"   {esc(agent)}: {esc(config.fmt_mins(med_val))}")
-
-        lines.append("📊 <b>P90 FRT per Agent:</b>")
-        for agent in sorted(agent_frt.keys()):
-            vals = sorted(agent_frt[agent])
-            p90_idx = int(len(vals) * 0.9)
-            p90_val = vals[min(p90_idx, len(vals) - 1)]
-            lines.append(f"   {esc(agent)}: {esc(config.fmt_mins(p90_val))}")
+        lines.append("📊 <b>P90 FRT per Agent</b> (shift-split):")
+        for agent in sorted(per_agent.keys()):
+            s = metrics.summarize(per_agent[agent])
+            if s['p90_frt'] is None:
+                continue
+            lines.append(f"   {esc(agent)}: {esc(config.fmt_mins(s['p90_frt']))}")
     else:
         lines.append("No responses recorded in this period.")
     lines.append("")
@@ -175,30 +193,27 @@ def generate_daily_report(target_date=None):
             f"({len(compliant)/total_resp*100:.1f}%)"
         )
 
-        # Per-agent SLA
-        agent_tickets = {}
-        for t in responded_tickets:
-            name = t['agent_name'] or 'Unknown'
-            agent_tickets.setdefault(name, []).append(t)
-
-        for agent in sorted(agent_tickets.keys()):
-            tickets_list = agent_tickets[agent]
-            ok = [t for t in tickets_list if not t['sla_breached']]
-            bad = [t for t in tickets_list if t['sla_breached']]
-            pct = len(ok) / len(tickets_list) * 100 if tickets_list else 0
-
+        # Per-agent SLA — based on per-segment contributions vs threshold.
+        # A "breach" here means a single shift's contribution exceeded
+        # SLA_FRT_THRESHOLD_MINS, not necessarily the whole-ticket FRT.
+        for agent in sorted(per_agent.keys()):
+            s = metrics.summarize(per_agent[agent])
+            total = s['count_with_frt']
+            if total == 0:
+                continue
+            breaches = s['breaches']
+            ok = total - len(breaches)
+            pct = ok / total * 100
             star = " ⭐" if pct == 100 else ""
             breach_info = ""
-            if bad:
+            if breaches:
                 breach_ids = ", ".join(
-                    f"{esc(t['ticket_id'])} ({esc(config.fmt_mins(t['response_time_mins']))})"
-                    for t in bad[:3]  # Show max 3 breaches
+                    f"{esc(tid)} ({esc(config.fmt_mins(mins))})"
+                    for tid, mins in breaches[:3]
                 )
                 breach_info = f" — breaches: {breach_ids}"
-
             lines.append(
-                f"   {esc(agent)}: {len(ok)}/{len(tickets_list)} "
-                f"({pct:.0f}%){star}{breach_info}"
+                f"   {esc(agent)}: {ok}/{total} ({pct:.0f}%){star}{breach_info}"
             )
     else:
         lines.append("No responses to evaluate.")
@@ -342,6 +357,7 @@ def send_telegram_message(text):
             chunks.append(current)
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    all_ok = True
     for raw_chat_id in chat_ids:
         chat_id = raw_chat_id
         thread_id = None
@@ -362,18 +378,57 @@ def send_telegram_message(text):
                 payload["message_thread_id"] = thread_id
 
             try:
-                r = requests.post(url, json=payload)
+                r = requests.post(url, json=payload, timeout=15)
                 r.raise_for_status()
                 if i == len(chunks) - 1:
                     print(f"✅ Telegram daily report sent to {chat_id}")
             except Exception as e:
+                all_ok = False
                 print(f"❌ Failed to send Telegram report to {chat_id}: {e}")
+    return all_ok
+
+
+def _build_snapshot(end_utc):
+    """Compute a small headline snapshot for the daily_reports archive.
+    Heavy computation (per-agent, per-product) is done LIVE by the dashboard
+    API; this snapshot is for week-over-week comparison only."""
+    start_utc = end_utc - timedelta(hours=24)
+    created = database.get_tickets_in_range(start_utc, end_utc)
+    closed = database.get_tickets_closed_in_range(start_utc, end_utc)
+    frts = [t['response_time_mins'] for t in created
+            if t['response_time_mins'] is not None]
+    avg_frt = round(sum(frts) / len(frts), 2) if frts else None
+    breaches = sum(1 for t in created if t.get('sla_breached'))
+    responded = [t for t in created if t['response_time_mins'] is not None]
+    sla_compliance = (
+        round((1 - breaches / len(responded)) * 100, 2)
+        if responded else None
+    )
+    return {
+        'window_start_utc': start_utc.isoformat(),
+        'window_end_utc': end_utc.isoformat(),
+        'total_created': len(created),
+        'total_resolved': len(closed),
+        'still_open': len(database.get_open_tickets()),
+        'avg_frt_mins': avg_frt,
+        'sla_breaches': breaches,
+        'sla_compliance_pct': sla_compliance,
+    }
 
 
 def send_report():
-    """Generate and send the daily report."""
+    """Generate and send the daily report. Touches a success marker so
+    bot.py's safety-net check knows today's job already completed. Also
+    archives a headline snapshot to daily_reports for historical view."""
+    end_utc = datetime.now(tz=timezone.utc)
     report_text = generate_daily_report()
-    send_telegram_message(report_text)
+    if send_telegram_message(report_text):
+        _touch_marker()
+        try:
+            snapshot = _build_snapshot(end_utc)
+            database.save_daily_report(end_utc.date().isoformat(), snapshot)
+        except Exception as e:
+            print(f"⚠️  Snapshot save failed (non-fatal): {e}")
 
 
 if __name__ == '__main__':

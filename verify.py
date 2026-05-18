@@ -1,8 +1,8 @@
 import discord
 import asyncio
 
-TOKEN = '<REDACTED_DISCORD_TOKEN>' 
-
+import config
+TOKEN = config.DISCORD_TOKEN
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)

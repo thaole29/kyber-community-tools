@@ -13,15 +13,25 @@ Tracks:
   - SLA breach detection with Telegram alerts
 """
 
+import asyncio
 import discord
 import os
 import re
 import requests
-from datetime import datetime, timezone, timedelta
+import subprocess
+import sys
+from datetime import datetime, time, timezone, timedelta
+from pathlib import Path
 from discord.ext import tasks
 
 import config
 import database
+import discord_backfill
+import classify_tickets
+
+PROJECT_DIR = Path(__file__).resolve().parent
+MARKER_DIR = PROJECT_DIR / 'logs' / '.markers'
+PYTHON_BIN = PROJECT_DIR / 'venv' / 'bin' / 'python'
 
 # --- CONFIGURATION ---
 TOKEN = config.DISCORD_TOKEN
@@ -52,11 +62,51 @@ def normalize_id(name):
 @client.event
 async def on_ready():
     database.init_db()
-    print(f'Analytics Bot started successfully as: {client.user}')
+    print(f'Analytics Bot started successfully as: {client.user}', flush=True)
     # Start the SLA monitoring loop
     if not sla_check_loop.is_running():
         sla_check_loop.start()
-    print(f'SLA monitoring loop started (every 5 minutes)')
+    print(f'SLA monitoring loop started (every 5 minutes)', flush=True)
+    # Start periodic catch-up loop (safety net for events lost during disconnect)
+    if not catchup_loop.is_running():
+        catchup_loop.start()
+    print(f'Catch-up audit loop started (every 5 minutes)', flush=True)
+    # Start safety-net loop for cron reports (DNS-on-wake recovery)
+    if not safety_net_loop.is_running():
+        safety_net_loop.start()
+    print(f'Safety-net loop started (every 30 minutes, after 04:00 UTC)', flush=True)
+    # Start LLM-based product classifier loop
+    if not classify_loop.is_running():
+        classify_loop.start()
+    print(f'Classify loop started (every 15 minutes)', flush=True)
+    # Aggressive one-shot scan on every (re)connect, to bridge any
+    # gateway gap. Runs in background so it doesn't delay on_ready.
+    asyncio.create_task(_initial_catchup())
+
+
+async def _initial_catchup():
+    """Right after a (re)connect, scan the last 24h of ticket channels and
+    backfill anything the bot missed while disconnected. Also reconcile
+    message timestamps on already-tracked open tickets — covers the case
+    where the row exists but specific on_message events were dropped.
+    Suppress alerts so historical breaches don't fire retroactive Telegram
+    messages."""
+    try:
+        await asyncio.sleep(5)  # let gateway finish READY/guild sync
+        created = await discord_backfill.audit_and_backfill(
+            client, max_age_hours=24, suppress_alerts=True
+        )
+        if created:
+            print(f'[ON_READY CATCHUP] Backfilled {len(created)} new ticket(s): {created}', flush=True)
+        else:
+            print(f'[ON_READY CATCHUP] No missing tickets in last 24h', flush=True)
+        reconciled = await discord_backfill.reconcile_open_tickets(
+            client, max_age_hours=24, suppress_alerts=True
+        )
+        if reconciled:
+            print(f'[ON_READY CATCHUP] Reconciled {len(reconciled)} open ticket(s)', flush=True)
+    except Exception as e:
+        print(f'[ON_READY CATCHUP] Error: {e}', flush=True)
 
 
 @client.event
@@ -215,9 +265,12 @@ async def on_message(message):
                 if cross:
                     parts.append("🔄 Cross-shift help")
 
-                send_telegram_alert("\n".join(parts))
-                database.mark_sla_alert_sent(tid)
-                print(f'[SLA LATE] {tid} — responded in {int(rt)} min — alert sent')
+                ok = await send_telegram_alert_async("\n".join(parts))
+                if ok:
+                    database.mark_sla_alert_sent(tid)
+                    print(f'[SLA LATE] {tid} — responded in {int(rt)} min — alert sent', flush=True)
+                else:
+                    print(f'[SLA LATE] {tid} — Telegram send failed; will retry', flush=True)
     else:
         # Non-agent human message in a ticket channel — capture as the
         # ticket owner's issue description for SLA alerts (idempotent).
@@ -302,9 +355,12 @@ async def sla_check_loop():
             if user_issue:
                 parts.append(f'📝 User issue: "{esc(user_issue)}"')
 
-            send_telegram_alert("\n".join(parts))
-            database.mark_sla_alert_sent(tid)
-            print(f'[SLA ALERT] {tid} — {int(minutes_waiting)} min — {on_duty}')
+            ok = await send_telegram_alert_async("\n".join(parts))
+            if ok:
+                database.mark_sla_alert_sent(tid)
+                print(f'[SLA ALERT] {tid} — {int(minutes_waiting)} min — {on_duty}', flush=True)
+            else:
+                print(f'[SLA ALERT] {tid} — Telegram send failed; will retry', flush=True)
 
     # =====================================================
     # PHASE 2 — Follow-up SLA
@@ -324,11 +380,13 @@ async def sla_check_loop():
         if minutes_waiting <= config.SLA_FRT_THRESHOLD_MINS:
             continue
 
-        # On-duty is the agent CURRENTLY on shift (when the follow-up SLA
-        # fires), not the one who was on shift when the ticket was opened.
-        current_shift, current_on_duty = config.get_on_duty_agent(now)
-        on_duty = current_on_duty or 'Unknown'
-        shift = current_shift or '?'
+        # On-duty is the agent on shift WHEN THE USER POSTED — i.e., the
+        # agent who was supposed to respond. Using `now` would mis-attribute
+        # a breach to the next shift's agent if the alert fires near a shift
+        # boundary (or fires late after bot downtime).
+        breach_shift, breach_on_duty = config.get_on_duty_agent(ref_dt)
+        on_duty = breach_on_duty or 'Unknown'
+        shift = breach_shift or '?'
         tid = ticket['ticket_id']
 
         shift_info = ""
@@ -346,9 +404,12 @@ async def sla_check_loop():
             f"📋 On-duty: <b>{esc(on_duty)}</b> "
             f"(Shift {esc(shift)}: {esc(shift_info)})",
         ]
-        send_telegram_alert("\n".join(parts))
-        database.mark_followup_alert_sent(tid)
-        print(f'[FOLLOWUP SLA] {tid} — waiting {int(minutes_waiting)} min — on-duty: {on_duty}')
+        ok = await send_telegram_alert_async("\n".join(parts))
+        if ok:
+            database.mark_followup_alert_sent(tid)
+            print(f'[FOLLOWUP SLA] {tid} — waiting {int(minutes_waiting)} min — on-duty: {on_duty}', flush=True)
+        else:
+            print(f'[FOLLOWUP SLA] {tid} — Telegram send failed; will retry', flush=True)
 
 
 @sla_check_loop.before_loop
@@ -356,16 +417,133 @@ async def before_sla_check():
     await client.wait_until_ready()
 
 
+# =====================================================
+# CATCH-UP LOOP (every 5 minutes)
+# Safety net for ticket-create events lost during gateway disconnects.
+# Compares active Discord channels against DB and silently backfills any
+# missing rows (with SLA alert flags pre-set so no retro alert fires).
+# =====================================================
+
+@tasks.loop(minutes=5)
+async def catchup_loop():
+    try:
+        created = await discord_backfill.audit_and_backfill(
+            client, max_age_hours=2, suppress_alerts=True
+        )
+        if created:
+            print(f'[CATCHUP] Backfilled {len(created)} missing ticket(s): {created}', flush=True)
+        # Reconcile message timestamps for open tickets — catches missed
+        # on_message events even when the channel_create event was caught.
+        reconciled = await discord_backfill.reconcile_open_tickets(
+            client, max_age_hours=24, suppress_alerts=True
+        )
+        if reconciled:
+            print(f'[CATCHUP] Reconciled {len(reconciled)} open ticket(s)', flush=True)
+    except Exception as e:
+        print(f'[CATCHUP] Error during audit: {e}', flush=True)
+
+
+@catchup_loop.before_loop
+async def before_catchup():
+    await client.wait_until_ready()
+
+
+# =====================================================
+# SAFETY-NET LOOP for scheduled reports
+# Each report script (daily_report, community_digest) writes a UTC-dated
+# marker on successful send. Cron fires at 02:00 UTC (= 09:00 +07). If by
+# 04:00 UTC the marker is missing (DNS failure, network not ready on
+# Mac wake, etc.), this loop reruns the script as a subprocess.
+# Cooldown prevents tight retries when the underlying issue persists.
+# =====================================================
+
+_SAFETY_NET_AFTER_UTC = time(hour=4, minute=0)
+_safety_net_last_attempt = {}  # job_name -> datetime
+_SAFETY_NET_JOBS = [
+    # (marker_name, script_filename)
+    ('daily_report', 'daily_report.py'),
+    ('community_digest', 'community_digest.py'),
+]
+
+
+@tasks.loop(minutes=30)
+async def safety_net_loop():
+    now = datetime.now(tz=timezone.utc)
+    if now.time() < _SAFETY_NET_AFTER_UTC:
+        return  # too early — give cron its window first
+
+    today = now.date().isoformat()
+    for name, script in _SAFETY_NET_JOBS:
+        marker = MARKER_DIR / f'{name}.success.{today}'
+        if marker.exists():
+            continue
+
+        last = _safety_net_last_attempt.get(name)
+        if last and (now - last) < timedelta(minutes=29):
+            continue  # cooldown
+        _safety_net_last_attempt[name] = now
+
+        print(f'[SAFETY NET] {name} marker for {today} missing — rerunning', flush=True)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                str(PYTHON_BIN), str(PROJECT_DIR / script),
+                cwd=str(PROJECT_DIR),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            stdout, _ = await proc.communicate()
+            tail_lines = (stdout.decode(errors='ignore') or '').strip().split('\n')[-3:]
+            print(f'[SAFETY NET] {name} exited {proc.returncode}; tail:', flush=True)
+            for line in tail_lines:
+                print(f'    {line}', flush=True)
+        except Exception as e:
+            print(f'[SAFETY NET] {name} subprocess error: {e}', flush=True)
+
+
+@safety_net_loop.before_loop
+async def before_safety_net():
+    await client.wait_until_ready()
+
+
+# =====================================================
+# PRODUCT CLASSIFIER LOOP (every 15 minutes)
+# Pulls open tickets that have user text but no product_group yet and
+# calls Gemini to classify them in batches. Cached results power the
+# dashboard's product breakdown. Idempotent — already-classified tickets
+# are skipped via the WHERE product_group IS NULL filter.
+# =====================================================
+
+@tasks.loop(minutes=15)
+async def classify_loop():
+    try:
+        n = await classify_tickets.classify_unclassified(batch_size=15, max_batches=3)
+        if n:
+            print(f'[CLASSIFY] Classified {n} ticket(s) this tick', flush=True)
+    except Exception as e:
+        print(f'[CLASSIFY] Error: {e}', flush=True)
+
+
+@classify_loop.before_loop
+async def before_classify():
+    await client.wait_until_ready()
+
+
 def send_telegram_alert(text):
-    """Send an alert message to every configured Telegram chat."""
+    """Send an alert message to every configured Telegram chat.
+
+    Returns True iff *every* configured target accepted the message.
+    Caller should only mark the ticket as alerted on True so transient
+    failures (timeout, 5xx, DNS) can be retried on the next loop tick.
+    """
     token = config.TELEGRAM_TOKEN
     chat_ids = config.TELEGRAM_CHAT_IDS
 
     if not token or not chat_ids:
-        print("⚠️  Telegram not configured — skipping SLA alert.")
-        return
+        print("⚠️  Telegram not configured — skipping SLA alert.", flush=True)
+        return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    all_ok = True
     for raw_chat_id in chat_ids:
         chat_id = raw_chat_id
         thread_id = None
@@ -385,10 +563,18 @@ def send_telegram_alert(text):
             payload["message_thread_id"] = thread_id
 
         try:
-            r = requests.post(url, json=payload)
+            r = requests.post(url, json=payload, timeout=10)
             r.raise_for_status()
         except Exception as e:
-            print(f"❌ Failed to send Telegram alert to {chat_id}: {e}")
+            all_ok = False
+            print(f"❌ Failed to send Telegram alert to {chat_id}: {e}", flush=True)
+    return all_ok
+
+
+async def send_telegram_alert_async(text):
+    """Run the blocking Telegram POST in a worker thread so the discord.py
+    event loop keeps heart-beating even if Telegram's API is slow or down."""
+    return await asyncio.to_thread(send_telegram_alert, text)
 
 
 client.run(TOKEN)

@@ -19,6 +19,7 @@ from statistics import median as stat_median
 
 import config
 import database
+import metrics
 
 
 def generate_weekly_report(end_date=None):
@@ -97,13 +98,15 @@ def generate_weekly_report(end_date=None):
 
     agents = ['Dablendo', 'Mikaelson', 'TerrorMichael', 'Reus']
 
+    # Shift-split aggregation: each agent's FRT pool counts both their own
+    # responses AND time the user spent waiting on their watch when the
+    # ticket was eventually picked up by someone else.
+    tw_per_agent = metrics.aggregate_per_agent(this_week)
+    pw_per_agent = metrics.aggregate_per_agent(prev_week)
+
     for agent in agents:
-        # This week FRT
-        tw_frts = [t['response_time_mins'] for t in this_week
-                   if t['agent_name'] == agent and t['response_time_mins'] is not None]
-        # Previous week FRT
-        pw_frts = [t['response_time_mins'] for t in prev_week
-                   if t['agent_name'] == agent and t['response_time_mins'] is not None]
+        tw_frts = tw_per_agent.get(agent, {}).get('frts', [])
+        pw_frts = pw_per_agent.get(agent, {}).get('frts', [])
 
         tw_avg = sum(tw_frts) / len(tw_frts) if tw_frts else None
         pw_avg = sum(pw_frts) / len(pw_frts) if pw_frts else None
@@ -117,11 +120,11 @@ def generate_weekly_report(end_date=None):
                 f"(was {esc(config.fmt_mins(pw_avg))}) — {trend}"
             )
             lines.append(f"    Median: {esc(config.fmt_mins(tw_med))} | "
-                         f"Tickets: {len(tw_frts)}")
+                         f"Segments: {len(tw_frts)}")
         elif tw_avg is not None:
             lines.append(
                 f"  <b>{esc(agent)}</b>: {esc(config.fmt_mins(tw_avg))} avg "
-                f"(no data last week) | Tickets: {len(tw_frts)}"
+                f"(no data last week) | Segments: {len(tw_frts)}"
             )
         else:
             lines.append(f"  <b>{esc(agent)}</b>: No responses this week")
@@ -139,16 +142,17 @@ def generate_weekly_report(end_date=None):
         start_h = shift_info['start']
         end_h = shift_info['end']
 
-        shift_tickets = [t for t in this_week if t['shift_label'] == label]
-        responded = [t for t in shift_tickets if t['on_duty_responded']]
-        missed = [t for t in shift_tickets
-                  if t['first_responded_at'] is not None and not t['on_duty_responded']]
-
+        a = tw_per_agent.get(agent, {})
+        on_shift = a.get('on_shift', 0)
+        responded_n = a.get('responded', 0)
+        missed_n = a.get('missed', 0)
+        cross_help_n = a.get('cross_help', 0)
         lines.append(
             f"  Shift {esc(label)} ({esc(agent)}, "
             f"{start_h:02d}:00–{end_h:02d}:00 UTC): "
-            f"{len(shift_tickets)} tickets | "
-            f"{len(responded)} handled | {len(missed)} covered by others"
+            f"{on_shift} on-shift | "
+            f"{responded_n} handled | {missed_n} covered by others | "
+            f"{cross_help_n} cross-help out"
         )
     lines.append("")
 
@@ -186,20 +190,17 @@ def generate_weekly_report(end_date=None):
             f"({pw_pct:.1f}%)"
         )
 
-    # Per-agent SLA this week
-    agent_sla = {}
-    for t in tw_responded:
-        name = t['agent_name'] or 'Unknown'
-        agent_sla.setdefault(name, {'ok': 0, 'total': 0})
-        agent_sla[name]['total'] += 1
-        if not t['sla_breached']:
-            agent_sla[name]['ok'] += 1
-
-    for agent in sorted(agent_sla.keys()):
-        s = agent_sla[agent]
-        pct = s['ok'] / s['total'] * 100 if s['total'] > 0 else 0
+    # Per-agent SLA this week — based on per-segment contributions vs
+    # SLA_FRT_THRESHOLD. A breach = a single shift's contribution > threshold.
+    for agent in sorted(tw_per_agent.keys()):
+        s = metrics.summarize(tw_per_agent[agent])
+        total = s['count_with_frt']
+        if total == 0:
+            continue
+        ok = total - len(s['breaches'])
+        pct = ok / total * 100
         star = " ⭐" if pct == 100 else ""
-        lines.append(f"    {esc(agent)}: {s['ok']}/{s['total']} ({pct:.0f}%){star}")
+        lines.append(f"    {esc(agent)}: {ok}/{total} ({pct:.0f}%){star}")
     lines.append("")
 
     # =====================================================

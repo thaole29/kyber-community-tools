@@ -1,7 +1,8 @@
 import discord
 from datetime import datetime, timezone, timedelta
 
-TOKEN = '<REDACTED_DISCORD_TOKEN>'
+import config
+TOKEN = config.DISCORD_TOKEN
 TRANSCRIPT_CHANNEL_NAME = 'transcripts'
 
 intents = discord.Intents.default()

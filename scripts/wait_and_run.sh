@@ -12,14 +12,16 @@
 #
 # Env overrides:
 #   WAIT_HOST     hostname to probe (default: api.telegram.org)
-#   WAIT_TIMEOUT  max seconds to wait (default: 120)
-#   WAIT_INTERVAL poll interval (default: 3)
+#   WAIT_TIMEOUT  max seconds to wait (default: 600)
+#   WAIT_INTERVAL poll interval (default: 5)
+#   WAIT_PROBE    seconds per dig probe (default: 3)
 
 set -u
 
 HOST="${WAIT_HOST:-api.telegram.org}"
-TIMEOUT="${WAIT_TIMEOUT:-120}"
-INTERVAL="${WAIT_INTERVAL:-3}"
+TIMEOUT="${WAIT_TIMEOUT:-600}"
+INTERVAL="${WAIT_INTERVAL:-5}"
+PROBE="${WAIT_PROBE:-3}"
 
 ts() { date '+%Y-%m-%d %H:%M:%S %z'; }
 
@@ -27,8 +29,11 @@ start=$(date +%s)
 attempt=0
 while true; do
     attempt=$((attempt + 1))
-    # `host` returns 0 if resolution succeeds; works without curl/wget.
-    if /usr/bin/host -W 2 "$HOST" >/dev/null 2>&1; then
+    # Use `dig +time +tries` instead of `host -W` — on macOS, `host -W 2`
+    # does NOT honor its timeout when the resolver itself is unreachable
+    # (real incident 2026-05-16: a single host call blocked ~17 min). `dig`
+    # has a hard per-query cap via +time + +tries.
+    if /usr/bin/dig +time="$PROBE" +tries=1 +short "$HOST" 2>/dev/null | grep -q .; then
         echo "[$(ts)] [wait_and_run] DNS ready for $HOST after $attempt attempt(s)"
         break
     fi

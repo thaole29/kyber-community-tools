@@ -48,7 +48,13 @@ def init_db():
             first_user_message    TEXT,
             last_user_msg_at      TEXT,
             last_agent_msg_at     TEXT,
-            followup_alert_sent   BOOLEAN DEFAULT 0
+            followup_alert_sent   BOOLEAN DEFAULT 0,
+            conversation_excerpt  TEXT,
+            product_group         TEXT,
+            product_subcategory   TEXT,
+            category_source       TEXT,
+            category_confidence   REAL,
+            classified_at         TEXT
         )
     """)
 
@@ -60,6 +66,12 @@ def init_db():
         ('last_user_msg_at',     'TEXT'),
         ('last_agent_msg_at',    'TEXT'),
         ('followup_alert_sent',  'BOOLEAN DEFAULT 0'),
+        ('conversation_excerpt', 'TEXT'),
+        ('product_group',        'TEXT'),
+        ('product_subcategory',  'TEXT'),
+        ('category_source',      'TEXT'),
+        ('category_confidence',  'REAL'),
+        ('classified_at',        'TEXT'),
     ):
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE tickets ADD COLUMN {col} {ddl}")
@@ -82,6 +94,18 @@ def init_db():
             message_count INTEGER,
             created_at    TEXT NOT NULL,
             UNIQUE (digest_date, channel)
+        )
+    """)
+
+    # Daily report snapshots — JSON of computed metrics (per-agent, per-product,
+    # SLA, etc.) saved by daily_report.py after it sends to Telegram. Used by
+    # the dashboard to render historical data without re-computing.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_reports (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_date TEXT NOT NULL UNIQUE,
+            report_json TEXT NOT NULL,
+            created_at  TEXT NOT NULL
         )
     """)
 
@@ -590,5 +614,122 @@ def get_community_digests_in_range(start_date, end_date):
             }
             for r in rows
         ]
+    finally:
+        conn.close()
+
+
+def get_latest_community_digest_date():
+    """Return the most recent digest_date present in community_digests, or
+    None. Used by the dashboard to pick which day's data to render."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT digest_date FROM community_digests "
+            "ORDER BY digest_date DESC LIMIT 1"
+        ).fetchone()
+        return row['digest_date'] if row else None
+    finally:
+        conn.close()
+
+
+# =====================================================
+# DAILY REPORT SNAPSHOTS (dashboard)
+# =====================================================
+
+def save_daily_report(report_date, payload):
+    """Persist (or replace) one day's computed daily-report JSON."""
+    conn = get_connection()
+    try:
+        conn.execute("""
+            INSERT OR REPLACE INTO daily_reports
+                (report_date, report_json, created_at)
+            VALUES (?, ?, ?)
+        """, (
+            report_date,
+            json.dumps(payload),
+            datetime.now(timezone.utc).isoformat(),
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_daily_report(report_date):
+    """Return parsed report_json for a given date, or None."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT report_json FROM daily_reports WHERE report_date = ?",
+            (report_date,),
+        ).fetchone()
+        return json.loads(row['report_json']) if row else None
+    finally:
+        conn.close()
+
+
+# =====================================================
+# PRODUCT CATEGORY (LLM-classified)
+# =====================================================
+
+def get_tickets_needing_classification(limit=20):
+    """Return tickets that have some text content but no product_group yet.
+    The classify loop sends these to Gemini in batches.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT ticket_id, first_user_message, conversation_excerpt
+            FROM tickets
+            WHERE product_group IS NULL
+              AND (
+                (first_user_message IS NOT NULL AND length(first_user_message) >= 8)
+                OR
+                (conversation_excerpt IS NOT NULL AND length(conversation_excerpt) >= 8)
+              )
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def save_ticket_classification(ticket_id, group, subcategory, source, confidence):
+    """Persist the LLM's classification for one ticket. Idempotent — overwrites."""
+    conn = get_connection()
+    try:
+        conn.execute("""
+            UPDATE tickets
+            SET product_group       = ?,
+                product_subcategory = ?,
+                category_source     = ?,
+                category_confidence = ?,
+                classified_at       = ?
+            WHERE ticket_id = ?
+        """, (
+            group, subcategory, source, confidence,
+            datetime.now(timezone.utc).isoformat(),
+            ticket_id,
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def save_conversation_excerpt(ticket_id, excerpt):
+    """Update conversation_excerpt (concat of first few user msgs) if absent
+    or shorter than the new value. No-op if the new excerpt is empty."""
+    if not excerpt:
+        return
+    conn = get_connection()
+    try:
+        conn.execute("""
+            UPDATE tickets
+            SET conversation_excerpt = ?
+            WHERE ticket_id = ?
+              AND (conversation_excerpt IS NULL
+                   OR length(conversation_excerpt) < length(?))
+        """, (excerpt, ticket_id, excerpt))
+        conn.commit()
     finally:
         conn.close()

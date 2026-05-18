@@ -18,11 +18,23 @@ import json
 import re
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import aiohttp
 import discord
 from google import genai
 from google.genai import types as genai_types
+
+# Success marker for safety-net check in bot.py — see _safety_net_loop().
+# bot.py looks for this file each day after the cron window; if missing,
+# it reruns the digest. Format: logs/.markers/community_digest.success.<UTC date>
+_MARKER_DIR = Path(__file__).resolve().parent / 'logs' / '.markers'
+
+
+def _touch_marker():
+    _MARKER_DIR.mkdir(parents=True, exist_ok=True)
+    today = datetime.now(tz=timezone.utc).date().isoformat()
+    (_MARKER_DIR / f'community_digest.success.{today}').touch()
 
 import config
 import database
@@ -307,7 +319,7 @@ async def send_telegram(text):
     chat_ids = config.TELEGRAM_CHAT_IDS
     if not token or not chat_ids:
         print("⚠️  Telegram not configured — skipping send.")
-        return
+        return False
 
     chunks = []
     if len(text) <= 4096:
@@ -324,7 +336,9 @@ async def send_telegram(text):
             chunks.append(cur)
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    async with aiohttp.ClientSession() as session:
+    all_ok = True
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         for raw_chat_id in chat_ids:
             chat_id = raw_chat_id
             thread_id = None
@@ -342,10 +356,16 @@ async def send_telegram(text):
                 }
                 if thread_id:
                     payload["message_thread_id"] = thread_id
-                async with session.post(url, json=payload) as r:
-                    if r.status >= 400:
-                        body = await r.text()
-                        print(f"❌ Telegram error {r.status} for {chat_id}: {body[:300]}")
+                try:
+                    async with session.post(url, json=payload) as r:
+                        if r.status >= 400:
+                            body = await r.text()
+                            all_ok = False
+                            print(f"❌ Telegram error {r.status} for {chat_id}: {body[:300]}")
+                except Exception as e:
+                    all_ok = False
+                    print(f"❌ Telegram send to {chat_id} failed: {e}")
+    return all_ok
 
 
 async def run_digest():
@@ -408,8 +428,12 @@ async def run_digest():
 
             local_label = now_utc.astimezone(config.LOCAL_TZ).strftime('%b %d, %Y')
             digest_text = format_telegram_digest(local_label, results)
-            await send_telegram(digest_text)
-            print("✅ Community digest delivered.")
+            ok = await send_telegram(digest_text)
+            if ok:
+                _touch_marker()
+                print("✅ Community digest delivered.")
+            else:
+                print("⚠️ Community digest send failed — marker NOT written; bot safety net will rerun.")
         finally:
             await client.close()
 
