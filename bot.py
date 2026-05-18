@@ -463,6 +463,10 @@ _SAFETY_NET_JOBS = [
     # (marker_name, script_filename)
     ('daily_report', 'daily_report.py'),
     ('community_digest', 'community_digest.py'),
+    # dashboard_snapshot is a SHELL script (not a python entry point) — the
+    # safety net spawns python script.py, so this entry uses a tiny wrapper
+    # script that invokes refresh_snapshot.sh.
+    ('dashboard_snapshot', 'scripts/refresh_snapshot_via_py.py'),
 ]
 
 

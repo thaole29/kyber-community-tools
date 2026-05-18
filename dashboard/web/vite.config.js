@@ -1,9 +1,15 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// During `vite` dev, proxy /api to the FastAPI server.
-// Production build (`vite build`) emits to dist/, served by FastAPI directly.
+// `base` is the path under which the bundle is served:
+//   - GitHub Pages (project site): /kyber-community-tools/
+//   - Local FastAPI / ngrok      : /
+// Vite injects this into asset URLs so they resolve correctly under either.
+// Override with `VITE_BASE=/foo/ npm run build` if you need a different prefix.
+const BASE = process.env.VITE_BASE ?? (process.env.GITHUB_ACTIONS ? '/kyber-community-tools/' : '/');
+
 export default defineConfig({
+  base: BASE,
   plugins: [react()],
   server: {
     proxy: {

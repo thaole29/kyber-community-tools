@@ -643,18 +643,23 @@ function SupportHealthTab({ data }) {
 }
 
 // ============================================================
-// DATE-RANGE FILTER
+// DATA SOURCE — dual-mode (live FastAPI or static snapshot)
 // ============================================================
+//
+// Live mode (default): hits /api/community + /api/support on the same
+//   origin as the page. Used when served by uvicorn or behind ngrok.
+// Snapshot mode: hits /data/community_<range>.json + /data/support_<range>.json
+//   instead. Used when deployed to GitHub Pages — the data files are
+//   refreshed by scripts/generate_snapshot.py and committed daily.
+//
+// Auto-detect: if `/data/meta.json` exists, we are in snapshot mode.
+// "Custom" date range is disabled in snapshot mode (no on-the-fly query).
 
 function fmtUtcDate(d) {
-  // YYYY-MM-DD in UTC, regardless of local TZ
   return d.toISOString().slice(0, 10);
 }
 
 function rangeToParams(range, custom) {
-  // 24h → no params (server default)
-  // 7d / 30d → start = today_utc - (N-1) days, end = today_utc
-  // custom → from custom.start / custom.end (validated)
   const today = new Date();
   const todayUtc = fmtUtcDate(today);
   if (range === "24h") return null;
@@ -669,7 +674,52 @@ function rangeToParams(range, custom) {
   return null;
 }
 
-function RangeFilter({ range, setRange, custom, setCustom, loading }) {
+async function detectMode() {
+  // Probe /data/meta.json. If it loads → snapshot mode.
+  try {
+    const r = await fetch("./data/meta.json", { cache: "no-store" });
+    if (r.ok) {
+      const meta = await r.json();
+      return { mode: "snapshot", meta };
+    }
+  } catch (_e) { /* fall through */ }
+  return { mode: "live", meta: null };
+}
+
+async function fetchData(mode, range, custom) {
+  if (mode === "snapshot") {
+    // Snapshot mode only knows the 3 preset ranges. Custom range falls
+    // back to the longest available (30d) with a hint to the user.
+    const key = ["24h", "7d", "30d"].includes(range) ? range : "30d";
+    const [c, s] = await Promise.all([
+      fetch(`./data/community_${key}.json`, { cache: "no-store" }).then(r => {
+        if (!r.ok) throw new Error(`community_${key} ${r.status}`);
+        return r.json();
+      }),
+      fetch(`./data/support_${key}.json`, { cache: "no-store" }).then(r => {
+        if (!r.ok) throw new Error(`support_${key} ${r.status}`);
+        return r.json();
+      }),
+    ]);
+    return [c, s];
+  }
+  // live mode
+  const params = rangeToParams(range, custom);
+  const qs = params ? "?" + new URLSearchParams(params).toString() : "";
+  const [c, s] = await Promise.all([
+    fetch("/api/community" + qs).then(r => {
+      if (!r.ok) throw new Error(`community ${r.status}`);
+      return r.json();
+    }),
+    fetch("/api/support" + qs).then(r => {
+      if (!r.ok) throw new Error(`support ${r.status}`);
+      return r.json();
+    }),
+  ]);
+  return [c, s];
+}
+
+function RangeFilter({ range, setRange, custom, setCustom, loading, mode }) {
   const presets = [
     { id: "24h", label: "24 hours" },
     { id: "7d",  label: "7 days" },
@@ -677,18 +727,29 @@ function RangeFilter({ range, setRange, custom, setCustom, loading }) {
     { id: "custom", label: "Custom" },
   ];
   const today = fmtUtcDate(new Date());
+  const isSnapshot = mode === "snapshot";
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
       <div style={{ display: "flex", gap: 4, background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: 4 }}>
-        {presets.map(p => (
-          <button key={p.id} onClick={() => setRange(p.id)} style={{
-            padding: "8px 14px", fontSize: 12, fontWeight: 600, border: "none",
-            borderRadius: 8, cursor: "pointer", transition: "all 0.15s",
-            background: range === p.id ? "rgba(34,197,94,0.18)" : "transparent",
-            color: range === p.id ? "#86efac" : "#64748b",
-            boxShadow: range === p.id ? "0 0 0 1px rgba(34,197,94,0.3)" : "none",
-          }}>{p.label}</button>
-        ))}
+        {presets.map(p => {
+          const disabled = isSnapshot && p.id === "custom";
+          return (
+            <button
+              key={p.id}
+              onClick={() => !disabled && setRange(p.id)}
+              disabled={disabled}
+              title={disabled ? "Custom range unavailable in snapshot mode" : undefined}
+              style={{
+                padding: "8px 14px", fontSize: 12, fontWeight: 600, border: "none",
+                borderRadius: 8, cursor: disabled ? "not-allowed" : "pointer",
+                transition: "all 0.15s",
+                opacity: disabled ? 0.35 : 1,
+                background: range === p.id ? "rgba(34,197,94,0.18)" : "transparent",
+                color: range === p.id ? "#86efac" : "#64748b",
+                boxShadow: range === p.id ? "0 0 0 1px rgba(34,197,94,0.3)" : "none",
+              }}>{p.label}</button>
+          );
+        })}
       </div>
       {range === "custom" && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#94a3b8" }}>
@@ -735,44 +796,42 @@ export default function Dashboard() {
   const [support, setSupport] = useState(null);
   const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [mode, setMode] = useState(null); // 'live' or 'snapshot'
+  const [snapshotMeta, setSnapshotMeta] = useState(null);
 
-  // Range state — default 24h matches old behavior. Custom defaults to
-  // last 7d so when user toggles to Custom there's already a sensible range.
   const [range, setRange] = useState("24h");
   const today = fmtUtcDate(new Date());
   const sevenDaysAgo = fmtUtcDate(new Date(Date.now() - 6 * 86400000));
   const [custom, setCustom] = useState({ start: sevenDaysAgo, end: today });
 
+  // Detect data source once on mount
   useEffect(() => {
-    const params = rangeToParams(range, custom);
+    detectMode().then(({ mode, meta }) => {
+      setMode(mode);
+      setSnapshotMeta(meta);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (mode === null) return; // wait until detectMode resolves
     if (range === "custom" && (!custom.start || !custom.end)) return;
-    const qs = params
-      ? "?" + new URLSearchParams(params).toString()
-      : "";
     let cancelled = false;
     setLoading(true);
     setErr(null);
-    Promise.all([
-      fetch("/api/community" + qs).then(r => {
-        if (!r.ok) throw new Error(`community ${r.status}`);
-        return r.json();
-      }),
-      fetch("/api/support" + qs).then(r => {
-        if (!r.ok) throw new Error(`support ${r.status}`);
-        return r.json();
-      }),
-    ]).then(([c, s]) => {
-      if (cancelled) return;
-      setCommunity(c);
-      setSupport(s);
-      setLoading(false);
-    }).catch(e => {
-      if (cancelled) return;
-      setErr(String(e.message || e));
-      setLoading(false);
-    });
+    fetchData(mode, range, custom)
+      .then(([c, s]) => {
+        if (cancelled) return;
+        setCommunity(c);
+        setSupport(s);
+        setLoading(false);
+      })
+      .catch(e => {
+        if (cancelled) return;
+        setErr(String(e.message || e));
+        setLoading(false);
+      });
     return () => { cancelled = true; };
-  }, [range, custom.start, custom.end]);
+  }, [mode, range, custom.start, custom.end]);
 
   const tabs = [
     { id: "community", label: "🎯 Community Pulse" },
@@ -831,7 +890,20 @@ export default function Dashboard() {
           custom={custom}
           setCustom={setCustom}
           loading={loading}
+          mode={mode}
         />
+
+        {/* Data freshness indicator */}
+        {mode === "snapshot" && snapshotMeta?.generated_at_utc && (
+          <div style={{
+            fontSize: 11, color: "#64748b",
+            fontFamily: "'JetBrains Mono', monospace",
+            marginBottom: 16,
+          }}>
+            📸 Snapshot mode · last refreshed {new Date(snapshotMeta.generated_at_utc).toLocaleString()}
+            {" · "}data updates daily at 09:00 (UTC+7)
+          </div>
+        )}
       </div>
 
       {/* Tab Content */}
