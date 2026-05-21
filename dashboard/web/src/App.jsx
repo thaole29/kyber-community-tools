@@ -217,7 +217,10 @@ function DonutChart({ data, total }) {
 }
 
 function AgentCard({ agent, actions }) {
-  const complianceColor = agent.slaCompliance >= 95 ? "#22c55e" : agent.slaCompliance >= 80 ? "#f59e0b" : "#ef4444";
+  const hasSla = agent.slaCompliance !== null && agent.slaCompliance !== undefined;
+  const complianceColor = !hasSla
+    ? "#64748b"
+    : agent.slaCompliance >= 95 ? "#22c55e" : agent.slaCompliance >= 80 ? "#f59e0b" : "#ef4444";
   const agentActions = actions?.items || [];
   const breaches = agent.breaches || [];
   return (
@@ -231,8 +234,11 @@ function AgentCard({ agent, actions }) {
           padding: "6px 14px", borderRadius: 10,
           background: `${complianceColor}18`, border: `1px solid ${complianceColor}44`,
           textAlign: "center",
-        }}>
-          <div style={{ fontSize: 20, fontWeight: 700, color: complianceColor }}>{agent.slaCompliance}%</div>
+        }}
+          title={hasSla ? undefined : "No tickets in this window"}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: complianceColor }}>
+            {hasSla ? `${agent.slaCompliance}%` : "--"}
+          </div>
           <div style={{ fontSize: 9, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>SLA</div>
         </div>
       </div>

@@ -578,7 +578,7 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
             'totalCrossHelpMins': resp_summary['total_cross_help_mins'],
             'fastest': fastest,
             'slowest': slowest,
-            'slaCompliance': summary['sla_compliance'] if summary['sla_compliance'] is not None else 100.0,
+            'slaCompliance': summary['sla_compliance'],  # null when no events in window
             'breaches': [tid for (tid, _mins) in summary['breaches']],
             'topProducts': top_products_list,
         })
