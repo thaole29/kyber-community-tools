@@ -514,6 +514,11 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
     # every responded ticket and returns those contributions per agent.
     import metrics
     per_agent = metrics.aggregate_per_agent(created)
+    # Per-response-event rollup: every (user_msg → agent_reply) gap in the
+    # window, including follow-ups. Used to expose avg_response_all alongside
+    # the FRT-split avgFRT (first response only).
+    response_events = database.get_response_events_in_range(start_utc, end_utc)
+    per_agent_resp = metrics.aggregate_response_events(response_events)
     agents = []
     for shift in config.SHIFTS:
         agent_name = shift['agent']
@@ -525,6 +530,9 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
             'on_shift': 0, 'responded': 0, 'missed': 0, 'cross_help': 0,
         })
         summary = metrics.summarize(a)
+        resp_summary = metrics.summarize_responses(per_agent_resp.get(agent_name, {
+            'all_mins': [], 'first_mins': [], 'followup_mins': [],
+        }))
         fastest_pair = summary['fastest']
         slowest_pair = summary['slowest']
         fastest = (
@@ -559,6 +567,11 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
             'crossHelp': summary['cross_help'],
             'avgFRT': summary['avg_frt'] if summary['avg_frt'] is not None else 0,
             'medianFRT': summary['median_frt'] if summary['median_frt'] is not None else 0,
+            'avgResponseAll': resp_summary['avg_response_all'] if resp_summary['avg_response_all'] is not None else 0,
+            'avgResponseFirst': resp_summary['avg_response_first'] if resp_summary['avg_response_first'] is not None else 0,
+            'avgResponseFollowup': resp_summary['avg_response_followup'] if resp_summary['avg_response_followup'] is not None else 0,
+            'responseCount': resp_summary['count_all'],
+            'followupCount': resp_summary['count_followup'],
             'fastest': fastest,
             'slowest': slowest,
             'slaCompliance': summary['sla_compliance'] if summary['sla_compliance'] is not None else 100.0,

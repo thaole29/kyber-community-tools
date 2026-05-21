@@ -72,9 +72,38 @@ def init_db():
         ('category_source',      'TEXT'),
         ('category_confidence',  'REAL'),
         ('classified_at',        'TEXT'),
+        ('pending_user_msg_at',  'TEXT'),
     ):
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE tickets ADD COLUMN {col} {ddl}")
+
+    # Per-message response events: one row per (user_msg → agent_reply) gap.
+    # Used to compute avg response time across both first and follow-ups,
+    # which the rolling last_*_at columns alone cannot reconstruct.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ticket_response_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id       TEXT NOT NULL,
+            user_msg_at     TEXT NOT NULL,
+            agent_msg_at    TEXT NOT NULL,
+            response_mins   REAL NOT NULL,
+            agent_name      TEXT,
+            agent_user_id   TEXT,
+            on_duty_agent   TEXT,
+            on_duty_shift   TEXT,
+            event_type      TEXT NOT NULL,
+            sla_breached    BOOLEAN DEFAULT 0,
+            created_at      TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tre_ticket "
+        "ON ticket_response_events(ticket_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tre_agent_time "
+        "ON ticket_response_events(agent_name, agent_msg_at)"
+    )
 
     # Backfill on_duty_agent_id from on_duty_agent_name on existing rows.
     for agent_id, canonical_name in config.AGENT_DISCORD_IDS.items():
@@ -151,6 +180,14 @@ def record_response(ticket_id, agent_name, agent_user_id, responded_at_utc):
     next user-wait cycle can re-alert. Additionally, if this is the FIRST
     agent reply, computes FRT, on-duty match, cross-shift flag, and sets
     first_responded_at. Returns True only when it recorded the first reply.
+
+    Also inserts a row into ticket_response_events when there is a pending
+    user wait being closed (first response or a follow-up). The event's
+    user_msg_at is:
+      - created_at for the first response (matches the FRT clock used in
+        metrics.contributions_for_ticket), or
+      - pending_user_msg_at for follow-ups (set by touch_user_msg on the
+        first user message of the current wait cycle).
     """
     conn = get_connection()
     try:
@@ -161,16 +198,50 @@ def record_response(ticket_id, agent_name, agent_user_id, responded_at_utc):
         if not row:
             return False
 
-        # Always log this agent activity and reset follow-up dedupe.
+        canonical_agent = config.normalize_agent(agent_name)
+        is_first = row['first_responded_at'] is None
+
+        # Resolve the wait-clock start for this event.
+        wait_start_str = row['created_at'] if is_first else row['pending_user_msg_at']
+        if wait_start_str:
+            wait_start = datetime.fromisoformat(wait_start_str)
+            if wait_start.tzinfo is None:
+                wait_start = wait_start.replace(tzinfo=timezone.utc)
+            if wait_start < responded_at_utc:
+                gap_mins = round((responded_at_utc - wait_start).total_seconds() / 60, 2)
+                shift_label, on_duty_at_reply = config.get_on_duty_agent(responded_at_utc)
+                conn.execute(
+                    "INSERT INTO ticket_response_events "
+                    "(ticket_id, user_msg_at, agent_msg_at, response_mins, "
+                    " agent_name, agent_user_id, on_duty_agent, on_duty_shift, "
+                    " event_type, sla_breached, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        ticket_id,
+                        wait_start.isoformat(),
+                        responded_at_utc.isoformat(),
+                        gap_mins,
+                        canonical_agent,
+                        str(agent_user_id),
+                        on_duty_at_reply,
+                        shift_label,
+                        'first' if is_first else 'followup',
+                        1 if gap_mins > config.SLA_FRT_THRESHOLD_MINS else 0,
+                        datetime.now(tz=timezone.utc).isoformat(),
+                    ),
+                )
+
+        # Always log agent activity, reset follow-up dedupe, clear pending wait.
         conn.execute(
-            "UPDATE tickets SET last_agent_msg_at = ?, followup_alert_sent = 0 "
+            "UPDATE tickets SET last_agent_msg_at = ?, followup_alert_sent = 0, "
+            "                   pending_user_msg_at = NULL "
             "WHERE ticket_id = ?",
             (responded_at_utc.isoformat(), ticket_id),
         )
 
-        if row['first_responded_at'] is not None:
+        if not is_first:
             conn.commit()
-            return False  # Already has a first response — but bookkeeping above did run
+            return False  # Already has a first response — event row above did run
 
         # Compute response time
         response_mins = None
@@ -180,9 +251,6 @@ def record_response(ticket_id, agent_name, agent_user_id, responded_at_utc):
                 created = created.replace(tzinfo=timezone.utc)
             diff = responded_at_utc - created
             response_mins = round(diff.total_seconds() / 60, 2)
-
-        # Normalize agent name
-        canonical_agent = config.normalize_agent(agent_name)
 
         # Determine on-duty match
         on_duty_agent = row['on_duty_agent_name']
@@ -367,18 +435,23 @@ def touch_user_msg(ticket_id, ts):
       - sla_alert_sent: only reset if no first agent reply yet (Phase 1).
       - followup_alert_sent: always reset (Phase 2 — agent has replied once
         and user is now pinging again).
+    Sticky-sets pending_user_msg_at to the FIRST user message of the current
+    wait cycle (only when previously NULL). record_response uses this as the
+    clock start for follow-up response events.
     No-op if the ticket is closed.
     """
+    ts_iso = ts.isoformat() if hasattr(ts, 'isoformat') else ts
     conn = get_connection()
     try:
         cur = conn.execute(
             "UPDATE tickets "
             "SET last_user_msg_at = ?, "
+            "    pending_user_msg_at = COALESCE(pending_user_msg_at, ?), "
             "    sla_alert_sent = CASE WHEN first_responded_at IS NULL "
             "                          THEN 0 ELSE sla_alert_sent END, "
             "    followup_alert_sent = 0 "
             "WHERE ticket_id = ? AND closed_at IS NULL",
-            (ts.isoformat() if hasattr(ts, 'isoformat') else ts, ticket_id),
+            (ts_iso, ts_iso, ticket_id),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -511,6 +584,82 @@ def get_ticket(ticket_id):
             "SELECT * FROM tickets WHERE ticket_id = ?", (ticket_id,)
         ).fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def delete_response_events_for_ticket(ticket_id):
+    """Remove all response events for one ticket. Used by backfill to
+    achieve idempotent re-runs."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM ticket_response_events WHERE ticket_id = ?",
+            (ticket_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_response_event(ticket_id, user_msg_at, agent_msg_at, agent_name,
+                          agent_user_id, event_type):
+    """Insert one (user_msg → agent_reply) gap row. Computes response_mins,
+    on-duty agent/shift at agent_msg_at, and SLA breach flag internally."""
+    def _to_dt(v):
+        if hasattr(v, 'isoformat'):
+            return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+        dt = datetime.fromisoformat(v)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    user_dt = _to_dt(user_msg_at)
+    agent_dt = _to_dt(agent_msg_at)
+    gap_mins = round((agent_dt - user_dt).total_seconds() / 60, 2)
+    shift_label, on_duty = config.get_on_duty_agent(agent_dt)
+
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO ticket_response_events "
+            "(ticket_id, user_msg_at, agent_msg_at, response_mins, "
+            " agent_name, agent_user_id, on_duty_agent, on_duty_shift, "
+            " event_type, sla_breached, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                ticket_id,
+                user_dt.isoformat(),
+                agent_dt.isoformat(),
+                gap_mins,
+                agent_name,
+                agent_user_id,
+                on_duty,
+                shift_label,
+                event_type,
+                1 if gap_mins > config.SLA_FRT_THRESHOLD_MINS else 0,
+                datetime.now(tz=timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_response_events_in_range(start_utc, end_utc, agent=None):
+    """Return ticket_response_events whose agent_msg_at falls in [start, end].
+    Optional agent filter (matches normalized name)."""
+    conn = get_connection()
+    try:
+        sql = (
+            "SELECT * FROM ticket_response_events "
+            "WHERE agent_msg_at >= ? AND agent_msg_at <= ?"
+        )
+        params = [start_utc.isoformat(), end_utc.isoformat()]
+        if agent:
+            sql += " AND agent_name = ?"
+            params.append(agent)
+        sql += " ORDER BY agent_msg_at"
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 

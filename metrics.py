@@ -39,9 +39,11 @@ def contributions_for_ticket(ticket):
     end = _to_utc(ticket.get('first_responded_at'))
     if end is None:
         return []
-    # Prefer the user's last activity before the response as the wait clock
-    # start (so re-pings reset). Fall back to ticket creation.
-    start = _to_utc(ticket.get('last_user_msg_at')) or _to_utc(ticket.get('created_at'))
+    # FRT clock = first user message that triggered the ticket (= created_at).
+    # Do NOT use last_user_msg_at: that field is rolling and gets overwritten
+    # by user follow-ups AFTER first_responded_at, which would either zero out
+    # the wait or invert it (start > end).
+    start = _to_utc(ticket.get('created_at'))
     if start is None or start >= end:
         return []
     responder = ticket.get('agent_name')
@@ -129,6 +131,53 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None):
                 s['slowest'] = (tid, round(mins, 2))
 
     return out
+
+
+def aggregate_response_events(events):
+    """Bucket ticket_response_events rows by agent. Each row is one
+    (user_msg → agent_reply) gap; type is 'first' or 'followup'.
+
+    Returns dict keyed by canonical agent_name:
+      {
+        'all_mins':      list[float]  — every gap this agent closed,
+        'first_mins':    list[float]  — gaps where event_type == 'first',
+        'followup_mins': list[float]  — gaps where event_type == 'followup',
+      }
+
+    Use summarize_responses() to derive averages and counts.
+    """
+    out = {}
+    for e in events:
+        agent = e.get('agent_name')
+        mins = e.get('response_mins')
+        if not agent or mins is None:
+            continue
+        slot = out.setdefault(agent, {
+            'all_mins': [],
+            'first_mins': [],
+            'followup_mins': [],
+        })
+        slot['all_mins'].append(mins)
+        et = e.get('event_type')
+        if et == 'first':
+            slot['first_mins'].append(mins)
+        elif et == 'followup':
+            slot['followup_mins'].append(mins)
+    return out
+
+
+def summarize_responses(agg_for_agent):
+    """Mean response time stats for one agent across first + follow-up events."""
+    def _mean(lst):
+        return round(sum(lst) / len(lst), 2) if lst else None
+    return {
+        'count_all':             len(agg_for_agent['all_mins']),
+        'count_first':           len(agg_for_agent['first_mins']),
+        'count_followup':        len(agg_for_agent['followup_mins']),
+        'avg_response_all':      _mean(agg_for_agent['all_mins']),
+        'avg_response_first':    _mean(agg_for_agent['first_mins']),
+        'avg_response_followup': _mean(agg_for_agent['followup_mins']),
+    }
 
 
 def summarize(agg_for_agent):

@@ -246,6 +246,12 @@ function AgentCard({ agent, actions }) {
       <div style={{ display: "flex", gap: 16, marginBottom: 14, fontSize: 12, color: "#94a3b8", flexWrap: "wrap" }}>
         <span>Avg FRT: <strong style={{ color: "#e2e8f0" }}>{agent.avgFRT}m</strong></span>
         <span>Median: <strong style={{ color: "#e2e8f0" }}>{agent.medianFRT}m</strong></span>
+        <span title="Mean of first + follow-up responses">
+          Avg Resp (incl FU): <strong style={{ color: "#e2e8f0" }}>{agent.avgResponseAll}m</strong>
+          {agent.responseCount > 0 && (
+            <span style={{ color: "#64748b" }}> ({agent.responseCount} evt{agent.followupCount > 0 ? `, ${agent.followupCount} FU` : ""})</span>
+          )}
+        </span>
         <span>🏆 <strong style={{ color: "#22c55e" }}>{agent.fastest?.time ?? "-"}m</strong> ({agent.fastest?.ticket ?? "-"})</span>
         <span>🐢 <strong style={{ color: "#ef4444" }}>{agent.slowest?.time ?? "-"}m</strong> ({agent.slowest?.ticket ?? "-"})</span>
       </div>
