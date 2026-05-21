@@ -16,6 +16,14 @@ const SENTIMENT_COLORS = {
 // SHARED COMPONENTS
 // ============================================================
 
+function formatMins(mins) {
+  const n = Math.round(Number(mins) || 0);
+  if (n < 60) return `${n}m`;
+  const h = Math.floor(n / 60);
+  const m = n % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
 function Card({ children, style }) {
   return (
     <div style={{
@@ -243,10 +251,10 @@ function AgentCard({ agent, actions }) {
         ))}
       </div>
 
-      <div style={{ display: "flex", gap: 16, marginBottom: 14, fontSize: 12, color: "#94a3b8", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 16, marginBottom: 8, fontSize: 12, color: "#94a3b8", flexWrap: "wrap" }}>
         <span>Avg FRT: <strong style={{ color: "#e2e8f0" }}>{agent.avgFRT}m</strong></span>
         <span>Median: <strong style={{ color: "#e2e8f0" }}>{agent.medianFRT}m</strong></span>
-        <span title="Mean of first + follow-up responses">
+        <span title="Mean across responded + cross-help + missed contributions (FRT-split applied to every event)">
           Avg Resp (incl FU): <strong style={{ color: "#e2e8f0" }}>{agent.avgResponseAll}m</strong>
           {agent.responseCount > 0 && (
             <span style={{ color: "#64748b" }}> ({agent.responseCount} evt{agent.followupCount > 0 ? `, ${agent.followupCount} FU` : ""})</span>
@@ -255,6 +263,24 @@ function AgentCard({ agent, actions }) {
         <span>🏆 <strong style={{ color: "#22c55e" }}>{agent.fastest?.time ?? "-"}m</strong> ({agent.fastest?.ticket ?? "-"})</span>
         <span>🐢 <strong style={{ color: "#ef4444" }}>{agent.slowest?.time ?? "-"}m</strong> ({agent.slowest?.ticket ?? "-"})</span>
       </div>
+
+      {(agent.missedCount > 0 || agent.totalCrossHelpMins > 0) && (
+        <div style={{ display: "flex", gap: 16, marginBottom: 14, fontSize: 12, color: "#94a3b8", flexWrap: "wrap" }}>
+          {agent.missedCount > 0 && (
+            <span title="Total minutes the on-duty agent was personally accountable for unanswered messages until their shift ended">
+              🚫 Missed:
+              <strong style={{ color: "#ef4444", marginLeft: 4 }}>{formatMins(agent.totalMissedMins)}</strong>
+              <span style={{ color: "#64748b" }}> ({agent.missedCount} seg)</span>
+            </span>
+          )}
+          {agent.totalCrossHelpMins > 0 && (
+            <span title="Total minutes credited for replying outside of own shift">
+              🤝 Cross-help:
+              <strong style={{ color: "#06b6d4", marginLeft: 4 }}>{formatMins(agent.totalCrossHelpMins)}</strong>
+            </span>
+          )}
+        </div>
+      )}
 
       {breaches.length > 0 && (
         <div style={{ fontSize: 11, color: "#ef4444", marginBottom: 12, padding: "6px 10px", background: "rgba(239,68,68,0.08)", borderRadius: 6 }}>
