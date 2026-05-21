@@ -233,41 +233,51 @@ def compute_frt_contributions(start_dt, end_dt, responding_agent=None):
         shift_label, shift_agent = get_on_duty_agent(cursor)
         boundary = _next_shift_boundary(cursor)
         segment_end = min(boundary, end_dt)
-        mins = (segment_end - cursor).total_seconds() / 60.0
         is_final = segment_end >= end_dt
-        if is_final and (responding_agent is None or shift_agent == responding_agent):
-            seg_type = 'responded'
-        else:
-            # Final segment whose shift agent doesn't match the responder is
-            # still a 'missed' contribution — the responder was helping cross-
-            # shift, and this on-duty agent should have caught it.
-            seg_type = 'missed'
-        contributions.append({
-            'agent': shift_agent,
-            'shift_label': shift_label,
-            'mins': round(mins, 2),
-            'type': seg_type,
-        })
-        cursor = segment_end
 
-    # If the responding agent helped cross-shift (none of the segments are
-    # tagged 'responded'), tag the FINAL segment as 'cross_help' for that
-    # responder. We still record the on-duty agent's miss for that segment;
-    # the responder's true contribution is appended separately so their pool
-    # gets credited.
-    if responding_agent and not any(c['type'] == 'responded' for c in contributions):
-        # The cross-help portion is the FINAL segment's minutes — that's the
-        # time between the responder's shift start (or simply: end_dt minus
-        # boundary) and end_dt. Since we already attributed those minutes to
-        # the on-duty agent as 'missed', also append a parallel 'cross_help'
-        # entry for the actual responder so their FRT pool reflects it.
-        final = contributions[-1]
-        contributions.append({
-            'agent': responding_agent,
-            'shift_label': None,
-            'mins': final['mins'],
-            'type': 'cross_help',
-        })
+        if is_final and (responding_agent is None or shift_agent == responding_agent):
+            # On-duty agent closed the wait in this segment.
+            mins = (segment_end - cursor).total_seconds() / 60.0
+            contributions.append({
+                'agent': shift_agent,
+                'shift_label': shift_label,
+                'mins': round(mins, 2),
+                'type': 'responded',
+            })
+            cursor = segment_end
+        elif is_final and shift_agent != responding_agent:
+            # Cross-help within on-duty's shift: on-duty personally failed
+            # during their shift. Charge them up to their shift end (boundary),
+            # NOT response time — per the accountability rule. The actual
+            # cross-helper gets credit for their true response gap.
+            missed_mins = (boundary - cursor).total_seconds() / 60.0
+            cross_help_mins = (end_dt - cursor).total_seconds() / 60.0
+            contributions.append({
+                'agent': shift_agent,
+                'shift_label': shift_label,
+                'mins': round(missed_mins, 2),
+                'type': 'missed',
+            })
+            if responding_agent:
+                contributions.append({
+                    'agent': responding_agent,
+                    'shift_label': None,
+                    'mins': round(cross_help_mins, 2),
+                    'type': 'cross_help',
+                })
+            cursor = end_dt
+        else:
+            # Non-final segment: on-duty agent misses for the full segment
+            # width (they failed for their entire remaining shift slice).
+            mins = (segment_end - cursor).total_seconds() / 60.0
+            contributions.append({
+                'agent': shift_agent,
+                'shift_label': shift_label,
+                'mins': round(mins, 2),
+                'type': 'missed',
+            })
+            cursor = segment_end
+
     return contributions
 
 

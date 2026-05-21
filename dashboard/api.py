@@ -532,6 +532,7 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
         summary = metrics.summarize(a)
         resp_summary = metrics.summarize_responses(per_agent_resp.get(agent_name, {
             'all_mins': [], 'first_mins': [], 'followup_mins': [],
+            'missed_mins': [], 'cross_help_mins': [], 'responded_mins': [],
         }))
         fastest_pair = summary['fastest']
         slowest_pair = summary['slowest']
@@ -572,6 +573,9 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
             'avgResponseFollowup': resp_summary['avg_response_followup'] if resp_summary['avg_response_followup'] is not None else 0,
             'responseCount': resp_summary['count_all'],
             'followupCount': resp_summary['count_followup'],
+            'missedCount': resp_summary['count_missed'],
+            'totalMissedMins': resp_summary['total_missed_mins'],
+            'totalCrossHelpMins': resp_summary['total_cross_help_mins'],
             'fastest': fastest,
             'slowest': slowest,
             'slaCompliance': summary['sla_compliance'] if summary['sla_compliance'] is not None else 100.0,

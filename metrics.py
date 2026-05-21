@@ -134,49 +134,82 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None):
 
 
 def aggregate_response_events(events):
-    """Bucket ticket_response_events rows by agent. Each row is one
-    (user_msg → agent_reply) gap; type is 'first' or 'followup'.
+    """Apply the FRT-split accountability rule to ticket_response_events
+    rows and bucket by agent.
+
+    For each event row, runs config.compute_frt_contributions over
+    (user_msg_at, agent_msg_at, responder) so each agent's segment
+    contribution is tallied — including 'missed' segments charged to the
+    on-duty agent up to their shift end when a cross-helper picked up.
 
     Returns dict keyed by canonical agent_name:
       {
-        'all_mins':      list[float]  — every gap this agent closed,
-        'first_mins':    list[float]  — gaps where event_type == 'first',
-        'followup_mins': list[float]  — gaps where event_type == 'followup',
+        'all_mins':       list[float]  — every contribution (responded /
+                                          cross_help / missed),
+        'first_mins':     list[float]  — contributions from event_type == 'first',
+        'followup_mins':  list[float]  — contributions from 'followup' events,
+        'missed_mins':    list[float]  — strictly the 'missed' contributions,
+        'cross_help_mins':list[float]  — strictly the 'cross_help' contributions,
+        'responded_mins': list[float]  — strictly the 'responded' contributions,
       }
-
-    Use summarize_responses() to derive averages and counts.
     """
     out = {}
     for e in events:
-        agent = e.get('agent_name')
-        mins = e.get('response_mins')
-        if not agent or mins is None:
+        responder = e.get('agent_name')
+        if not responder:
             continue
-        slot = out.setdefault(agent, {
-            'all_mins': [],
-            'first_mins': [],
-            'followup_mins': [],
-        })
-        slot['all_mins'].append(mins)
+        user_at = _to_utc(e.get('user_msg_at'))
+        agent_at = _to_utc(e.get('agent_msg_at'))
+        if user_at is None or agent_at is None or user_at >= agent_at:
+            continue
+        contribs = config.compute_frt_contributions(user_at, agent_at, responding_agent=responder)
         et = e.get('event_type')
-        if et == 'first':
-            slot['first_mins'].append(mins)
-        elif et == 'followup':
-            slot['followup_mins'].append(mins)
+        for c in contribs:
+            agent = c.get('agent')
+            mins = c.get('mins')
+            ctype = c.get('type')
+            if not agent or mins is None:
+                continue
+            slot = out.setdefault(agent, {
+                'all_mins': [],
+                'first_mins': [],
+                'followup_mins': [],
+                'missed_mins': [],
+                'cross_help_mins': [],
+                'responded_mins': [],
+            })
+            slot['all_mins'].append(mins)
+            if et == 'first':
+                slot['first_mins'].append(mins)
+            elif et == 'followup':
+                slot['followup_mins'].append(mins)
+            if ctype == 'missed':
+                slot['missed_mins'].append(mins)
+            elif ctype == 'cross_help':
+                slot['cross_help_mins'].append(mins)
+            elif ctype == 'responded':
+                slot['responded_mins'].append(mins)
     return out
 
 
 def summarize_responses(agg_for_agent):
-    """Mean response time stats for one agent across first + follow-up events."""
+    """Mean / count stats for one agent across split contributions."""
     def _mean(lst):
         return round(sum(lst) / len(lst), 2) if lst else None
+    def _sum(lst):
+        return round(sum(lst), 2) if lst else 0.0
     return {
         'count_all':             len(agg_for_agent['all_mins']),
         'count_first':           len(agg_for_agent['first_mins']),
         'count_followup':        len(agg_for_agent['followup_mins']),
+        'count_missed':          len(agg_for_agent['missed_mins']),
+        'count_cross_help':      len(agg_for_agent['cross_help_mins']),
+        'count_responded':       len(agg_for_agent['responded_mins']),
         'avg_response_all':      _mean(agg_for_agent['all_mins']),
         'avg_response_first':    _mean(agg_for_agent['first_mins']),
         'avg_response_followup': _mean(agg_for_agent['followup_mins']),
+        'total_missed_mins':     _sum(agg_for_agent['missed_mins']),
+        'total_cross_help_mins': _sum(agg_for_agent['cross_help_mins']),
     }
 
 
