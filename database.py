@@ -252,10 +252,19 @@ def record_response(ticket_id, agent_name, agent_user_id, responded_at_utc):
             diff = responded_at_utc - created
             response_mins = round(diff.total_seconds() / 60, 2)
 
-        # Determine on-duty match
+        # Determine on-duty match.
+        # on_duty_responded compares responder to the on-duty agent at TICKET
+        # CREATION (the agent who "owned" the ticket from the start).
+        # cross_shift_help means the responder was OFF-SHIFT at reply time —
+        # i.e. they covered for whoever was on duty when they actually replied.
+        # A normal same-shift handoff (ticket opens in shift A, picked up by
+        # shift B's on-duty agent) is NOT cross-help.
         on_duty_agent = row['on_duty_agent_name']
         on_duty_responded = (canonical_agent == on_duty_agent) if on_duty_agent else False
-        cross_shift = (canonical_agent != on_duty_agent) if on_duty_agent else False
+        _, on_duty_at_reply = config.get_on_duty_agent(responded_at_utc)
+        cross_shift = (
+            canonical_agent != on_duty_at_reply if on_duty_at_reply else False
+        )
 
         # Check SLA breach
         sla_breached = (response_mins > config.SLA_FRT_THRESHOLD_MINS) if response_mins is not None else False

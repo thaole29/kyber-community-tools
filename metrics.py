@@ -97,17 +97,23 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None):
         if not contribs:
             continue
         tid = t['ticket_id']
-        on_duty = t.get('on_duty_agent_name')
-        responder = t.get('agent_name')
+        on_duty = t.get('on_duty_agent_name')  # on-duty at ticket creation
         if on_duty:
             slot(on_duty)['on_shift'] += 1
-        if responder and on_duty and responder == on_duty:
-            slot(responder)['responded'] += 1
-        elif responder and on_duty and responder != on_duty:
-            slot(responder)['cross_help'] += 1
-            slot(on_duty)['missed'] += 1
-        elif responder and not on_duty:
-            slot(responder)['responded'] += 1
+
+        # Derive responded / cross_help / missed counts directly from the
+        # shift-split contributions: an agent's segment type IS the verdict.
+        # Cross-help = agent replied OUTSIDE their own shift; we never label
+        # a same-shift response as cross-help even if the ticket originated
+        # in another shift.
+        for c in contribs:
+            ctype = c['type']
+            if ctype == 'responded':
+                slot(c['agent'])['responded'] += 1
+            elif ctype == 'cross_help':
+                slot(c['agent'])['cross_help'] += 1
+        for ag in {c['agent'] for c in contribs if c['type'] == 'missed' and c['agent']}:
+            slot(ag)['missed'] += 1
 
         for c in contribs:
             agent = c['agent']
