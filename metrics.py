@@ -89,6 +89,12 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None):
                 'responded': 0,
                 'missed': 0,
                 'cross_help': 0,
+                # Tickets where this agent was on-duty but a shift buddy
+                # covered the reply (no miss, no responded credit). Useful
+                # for surfacing buddy support on the dashboard.
+                'buddy_covered': 0,
+                'buddy_covered_by': {},  # {buddy_name: count}
+                'buddy_covered_tickets': [],  # list of ticket ids
             }
         return out[name]
 
@@ -112,6 +118,13 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None):
                 slot(c['agent'])['responded'] += 1
             elif ctype == 'cross_help':
                 slot(c['agent'])['cross_help'] += 1
+            elif ctype == 'buddy_covered' and c.get('agent'):
+                s = slot(c['agent'])
+                s['buddy_covered'] += 1
+                buddy = c.get('buddy')
+                if buddy:
+                    s['buddy_covered_by'][buddy] = s['buddy_covered_by'].get(buddy, 0) + 1
+                s['buddy_covered_tickets'].append(tid)
         for ag in {c['agent'] for c in contribs if c['type'] == 'missed' and c['agent']}:
             slot(ag)['missed'] += 1
 
@@ -122,6 +135,9 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None):
             s = slot(agent)
             mins = c['mins']
             ctype = c['type']
+            # buddy_covered is a marker only (mins=0); skip FRT/SLA scoring.
+            if ctype == 'buddy_covered':
+                continue
             if ctype in ('responded', 'cross_help'):
                 s['frts'].append(mins)
             elif ctype == 'missed':
@@ -247,4 +263,7 @@ def summarize(agg_for_agent):
         'responded': agg_for_agent['responded'],
         'missed': agg_for_agent['missed'],
         'cross_help': agg_for_agent['cross_help'],
+        'buddy_covered': agg_for_agent.get('buddy_covered', 0),
+        'buddy_covered_by': agg_for_agent.get('buddy_covered_by', {}),
+        'buddy_covered_tickets': agg_for_agent.get('buddy_covered_tickets', []),
     }

@@ -112,6 +112,64 @@ SHIFTS = [
 ]
 
 # =====================================================
+# SHIFT BUDDIES (time-windowed overlap pairs)
+# =====================================================
+# Declares pairs of agents that share the seat for a specific UTC hour
+# window. When a buddy of the on-duty agent answers a ticket AND the reply
+# moment falls inside the declared window, the on-duty agent is NOT charged
+# as "missed" (their buddy effectively covered the seat). The buddy still
+# gets the response credit as `cross_help` since they are not the shift's
+# primary owner in SHIFTS.
+#
+# Keyed by on-duty agent → list of {buddy, start, end} entries.
+# `start`/`end` are UTC hours, half-open [start, end). Windows that cross
+# midnight (end <= start) are supported.
+#
+# Current pairings (per 2026-05-25 spec from product):
+#   Reus ↔ Dablendo   09:00–16:00 UTC+7  →  02:00–09:00 UTC (full Shift A)
+#   Reus ↔ Mikaelson  16:00–18:00 UTC+7  →  09:00–11:00 UTC (first 2h of Shift B)
+SHIFT_BUDDIES = {
+    'Dablendo': [
+        {'buddy': 'Reus', 'start': 2, 'end': 9},
+    ],
+    'Mikaelson': [
+        {'buddy': 'Reus', 'start': 9, 'end': 11},
+    ],
+}
+
+
+def is_shift_buddy(on_duty_agent, responder, time_utc=None):
+    """Return True if `responder` covers `on_duty_agent`'s seat at `time_utc`.
+
+    `time_utc` is the moment to evaluate (typically the response time). If
+    omitted, returns True when ANY buddy window exists for the pair — useful
+    for boolean "is there any overlap relation" checks.
+    """
+    if not on_duty_agent or not responder:
+        return False
+    entries = SHIFT_BUDDIES.get(on_duty_agent, [])
+    matches = [e for e in entries if e.get('buddy') == responder]
+    if not matches:
+        return False
+    if time_utc is None:
+        return True
+    if time_utc.tzinfo is None:
+        t = time_utc.replace(tzinfo=timezone.utc)
+    else:
+        t = time_utc.astimezone(timezone.utc)
+    h = t.hour
+    for e in matches:
+        start, end = e['start'], e['end']
+        if start < end:
+            if start <= h < end:
+                return True
+        else:
+            # window crosses midnight (e.g. 22:00–02:00)
+            if h >= start or h < end:
+                return True
+    return False
+
+# =====================================================
 # SLA THRESHOLDS
 # =====================================================
 SLA_FRT_THRESHOLD_MINS = 15        # First Response Time target: ≤ 15 minutes
@@ -250,8 +308,34 @@ def compute_frt_contributions(start_dt, end_dt, responding_agent=None):
             # during their shift. Charge them up to their shift end (boundary),
             # NOT response time — per the accountability rule. The actual
             # cross-helper gets credit for their true response gap.
-            missed_mins = (boundary - cursor).total_seconds() / 60.0
+            #
+            # EXCEPTION (shift buddy): if the responder is declared as an
+            # overlap buddy of the on-duty agent (see SHIFT_BUDDIES), the
+            # buddy is treated as covering the seat. The on-duty agent is
+            # NOT marked missed; the buddy still gets cross_help credit
+            # for the actual wait time.
             cross_help_mins = (end_dt - cursor).total_seconds() / 60.0
+            if is_shift_buddy(shift_agent, responding_agent, end_dt):
+                if responding_agent:
+                    contributions.append({
+                        'agent': responding_agent,
+                        'shift_label': None,
+                        'mins': round(cross_help_mins, 2),
+                        'type': 'cross_help',
+                    })
+                # Marker so reports/dashboards can show "Dablendo's seat was
+                # covered by Reus" without counting it as a miss. mins=0 so
+                # it does not affect any FRT averages.
+                contributions.append({
+                    'agent': shift_agent,
+                    'shift_label': shift_label,
+                    'mins': 0.0,
+                    'type': 'buddy_covered',
+                    'buddy': responding_agent,
+                })
+                cursor = end_dt
+                continue
+            missed_mins = (boundary - cursor).total_seconds() / 60.0
             contributions.append({
                 'agent': shift_agent,
                 'shift_label': shift_label,

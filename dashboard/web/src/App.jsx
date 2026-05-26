@@ -288,6 +288,30 @@ function AgentCard({ agent, actions }) {
         </div>
       )}
 
+      {agent.buddyCovered > 0 && (
+        <div
+          style={{
+            display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+            marginBottom: 12, padding: "8px 12px",
+            background: "rgba(168,85,247,0.08)",
+            border: "1px solid rgba(168,85,247,0.25)",
+            borderRadius: 8, fontSize: 12, color: "#cbd5e1",
+          }}
+          title="Tickets where a declared shift buddy answered during the overlap window — the on-duty agent is NOT marked missed for these."
+        >
+          <span>🤝 Covered by buddy:</span>
+          {(agent.buddyCoveredBy || []).map((b, i) => (
+            <span key={i} style={{ color: "#e2e8f0" }}>
+              <strong style={{ color: "#a855f7" }}>{b.buddy}</strong>
+              <span style={{ color: "#64748b" }}> × {b.count}</span>
+            </span>
+          ))}
+          <span style={{ color: "#64748b", marginLeft: "auto" }}>
+            {agent.buddyCovered} ticket{agent.buddyCovered === 1 ? "" : "s"}
+          </span>
+        </div>
+      )}
+
       {breaches.length > 0 && (
         <div style={{ fontSize: 11, color: "#ef4444", marginBottom: 12, padding: "6px 10px", background: "rgba(239,68,68,0.08)", borderRadius: 6 }}>
           ⚠️ SLA breaches: {breaches.join(", ")}

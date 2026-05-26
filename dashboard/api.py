@@ -528,6 +528,7 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
             'frts': [], 'missed_mins': [], 'breaches': [],
             'fastest': None, 'slowest': None,
             'on_shift': 0, 'responded': 0, 'missed': 0, 'cross_help': 0,
+            'buddy_covered': 0, 'buddy_covered_by': {}, 'buddy_covered_tickets': [],
         })
         summary = metrics.summarize(a)
         resp_summary = metrics.summarize_responses(per_agent_resp.get(agent_name, {
@@ -581,6 +582,15 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
             'slaCompliance': summary['sla_compliance'],  # null when no events in window
             'breaches': [tid for (tid, _mins) in summary['breaches']],
             'topProducts': top_products_list,
+            'buddyCovered': summary['buddy_covered'],
+            'buddyCoveredBy': [
+                {'buddy': b, 'count': n}
+                for b, n in sorted(
+                    summary['buddy_covered_by'].items(),
+                    key=lambda kv: -kv[1],
+                )
+            ],
+            'buddyCoveredTickets': summary['buddy_covered_tickets'],
         })
 
     # Agent action items (heuristic rules)
