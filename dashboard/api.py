@@ -425,12 +425,11 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
     now_utc = datetime.now(tz=timezone.utc)
 
     created = database.get_tickets_in_range(start_utc, end_utc)
-    closed = database.get_tickets_closed_in_range(start_utc, end_utc)
     open_all = database.get_open_tickets()
 
     # Headline metrics
     total = len(created)
-    resolved = len(closed)
+    resolved = sum(1 for t in created if t.get('closed_at'))
     open_count = sum(
         1 for t in open_all
         if t.get('created_at')

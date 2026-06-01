@@ -23,6 +23,7 @@ the last refresh time.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -54,7 +55,14 @@ def _atomic_write(path: Path, payload: dict) -> None:
 
 
 def main() -> int:
-    now = datetime.now(tz=timezone.utc)
+    as_of = os.environ.get('AS_OF', '').strip()
+    if as_of:
+        # Accept 2026-05-30T02:00:00Z or 2026-05-30T02:00:00+00:00.
+        now = datetime.fromisoformat(as_of.replace('Z', '+00:00'))
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = datetime.now(tz=timezone.utc)
     print(f'[snapshot] generating at {now.isoformat()}', flush=True)
 
     meta = {

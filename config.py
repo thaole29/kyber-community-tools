@@ -46,6 +46,7 @@ COMMUNITY_CHANNELS = [
     '🧮limit-order',
     '🌾kyber-earn',
     '🏆kyberians-of-the-month',
+    '💡ideas-hub',
 ]
 
 # Cap messages fetched per channel per run; sample evenly if exceeded.
