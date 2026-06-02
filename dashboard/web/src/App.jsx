@@ -591,7 +591,21 @@ function SupportHealthTab({ data }) {
           { label: "Still Open", value: data.open, color: "#f59e0b" },
           { label: "Avg FRT", value: `${data.avgFRT}m`, color: "#06b6d4" },
           { label: "SLA Compliance", value: `${data.slaCompliance}%`, color: data.slaCompliance >= 90 ? "#22c55e" : "#f59e0b" },
-        ].map((s, i) => (
+          (data.satisfaction && data.satisfaction.classified > 0)
+            ? {
+                label: "Satisfaction",
+                value: data.satisfaction.positivePct === null
+                  ? "--"
+                  : `${data.satisfaction.positivePct}%`,
+                color: data.satisfaction.positivePct === null
+                  ? "#64748b"
+                  : data.satisfaction.positivePct >= 70 ? "#22c55e"
+                  : data.satisfaction.positivePct >= 40 ? "#f59e0b"
+                  : "#ef4444",
+                sub: `${data.satisfaction.positive}+ / ${data.satisfaction.neutral}~ / ${data.satisfaction.negative}- · ${data.satisfaction.noSignal} silent`,
+              }
+            : null,
+        ].filter(Boolean).map((s, i) => (
           <div key={i} style={{
             flex: "1 1 120px", padding: "16px 18px",
             background: "rgba(255,255,255,0.03)", borderRadius: 12,
@@ -599,6 +613,9 @@ function SupportHealthTab({ data }) {
           }}>
             <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}>{s.label}</div>
             <div style={{ fontSize: 26, fontWeight: 700, color: s.color }}>{s.value}</div>
+            {s.sub && (
+              <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>{s.sub}</div>
+            )}
           </div>
         ))}
       </div>
@@ -663,6 +680,42 @@ function SupportHealthTab({ data }) {
           ))}
         </div>
       </div>
+
+      {/* User-satisfaction review queue */}
+      {data.reviewQueue && data.reviewQueue.length > 0 && (
+        <Card style={{ marginBottom: 16 }}>
+          <CardTitle
+            title="🙁 Needs Review — Negative User Sentiment"
+            subtitle={`${data.reviewQueue.length} ticket(s) where the user expressed dissatisfaction with the agent's help`}
+          />
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                  {["Ticket", "Agent", "Product", "Score", "Signals"].map((h, i) => (
+                    <th key={i} style={{ textAlign: "left", padding: "8px 12px", color: "#64748b", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.reviewQueue.map((r, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                    <td style={{ padding: "10px 12px", color: "#e2e8f0", fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>{r.id}</td>
+                    <td style={{ padding: "10px 12px", color: "#e2e8f0" }}>{r.agent}</td>
+                    <td style={{ padding: "10px 12px", color: "#94a3b8" }}>{r.product}</td>
+                    <td style={{ padding: "10px 12px", color: "#ef4444", fontWeight: 600 }}>
+                      {r.score === null || r.score === undefined ? "--" : r.score.toFixed(2)}
+                    </td>
+                    <td style={{ padding: "10px 12px", color: "#94a3b8", fontSize: 12 }}>
+                      {(r.signals || []).join(" · ")}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       {/* Open Tickets */}
       <Card>

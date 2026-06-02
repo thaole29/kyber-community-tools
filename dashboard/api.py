@@ -15,9 +15,11 @@ Imports `config` and `database` from project root, so always launch from
 the project working directory.
 """
 
+import json
 import os
 import statistics
 import sys
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -636,6 +638,48 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
     for r in open_table:
         r.pop('_age_seconds', None)
 
+    # Satisfaction summary across created tickets in the window. Tickets
+    # without a classification yet are not counted (the classifier loop will
+    # fill them in incrementally).
+    sat_counts = Counter(
+        t.get('satisfaction_label') for t in created
+        if t.get('satisfaction_label') in ('positive', 'neutral',
+                                            'negative', 'no_signal')
+    )
+    sat_classified = sum(sat_counts.values())
+    sat_with_signal = sat_classified - sat_counts.get('no_signal', 0)
+    satisfaction = {
+        'classified': sat_classified,
+        'unclassified': total - sat_classified,
+        'positive': sat_counts.get('positive', 0),
+        'neutral': sat_counts.get('neutral', 0),
+        'negative': sat_counts.get('negative', 0),
+        'noSignal': sat_counts.get('no_signal', 0),
+        # % positive among tickets with a real signal (excludes silent closures).
+        'positivePct': (
+            round(sat_counts.get('positive', 0) / sat_with_signal * 100, 1)
+            if sat_with_signal else None
+        ),
+    }
+
+    # Review queue — every negative ticket surfaces for the team to look at.
+    review_queue = []
+    for t in created:
+        if t.get('satisfaction_label') != 'negative':
+            continue
+        try:
+            signals = json.loads(t.get('satisfaction_signals') or '[]')
+        except (json.JSONDecodeError, TypeError):
+            signals = []
+        review_queue.append({
+            'id': t['ticket_id'],
+            'agent': t.get('agent_name') or 'Unknown',
+            'product': get_ticket_category(t),
+            'score': t.get('satisfaction_score'),
+            'signals': signals[:3],
+        })
+    review_queue.sort(key=lambda r: r['score'] if r['score'] is not None else 0)
+
     return {
         'lastUpdated': now_utc.strftime('%Y-%m-%d %H:%M UTC'),
         'period': window_label,
@@ -649,6 +693,8 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
         'agents': agents,
         'agentActions': agent_actions,
         'openTickets': open_table,
+        'satisfaction': satisfaction,
+        'reviewQueue': review_queue,
     }
 
 
