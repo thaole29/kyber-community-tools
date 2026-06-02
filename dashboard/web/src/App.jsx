@@ -749,6 +749,45 @@ function SupportHealthTab({ data }) {
           )}
         </Card>
       )}
+
+      {/* Community activity — per-agent volume in non-ticket channels */}
+      {data.communityActivity && data.communityActivity.agents.length > 0 && (
+        <Card style={{ marginTop: 16 }}>
+          <CardTitle
+            title="📣 Community Activity"
+            subtitle={`${data.communityActivity.totalAgentMsgs} agent message(s) across ${data.communityActivity.channels.length} community channels (${data.communityActivity.windowStart} → ${data.communityActivity.windowEnd} UTC)`}
+          />
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                  <th style={{ textAlign: "left", padding: "8px 12px", color: "#64748b", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Agent</th>
+                  <th style={{ textAlign: "right", padding: "8px 12px", color: "#64748b", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Total</th>
+                  {data.communityActivity.channels.map((ch) => (
+                    <th key={ch} style={{ textAlign: "right", padding: "8px 12px", color: "#64748b", fontSize: 11, fontWeight: 600 }}>{ch}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.communityActivity.agents.map((a, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                    <td style={{ padding: "10px 12px", color: "#e2e8f0", fontWeight: 600 }}>{a.name}</td>
+                    <td style={{ padding: "10px 12px", color: "#f1f5f9", fontWeight: 700, textAlign: "right" }}>{a.total}</td>
+                    {data.communityActivity.channels.map((ch) => {
+                      const n = a.channels[ch] || 0;
+                      return (
+                        <td key={ch} style={{ padding: "10px 12px", textAlign: "right", color: n ? "#94a3b8" : "#475569" }}>
+                          {n || "—"}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
     </>
   );
 }

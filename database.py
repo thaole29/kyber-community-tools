@@ -118,6 +118,25 @@ def init_db():
             (agent_id, canonical_name),
         )
 
+    # Per-agent message activity in community channels (NOT ticket channels).
+    # Aggregated by UTC date so the daily crawler can UPSERT without
+    # racing with itself. Rendered as the "Community Activity" section at
+    # the bottom of the Support tab.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS community_agent_activity_daily (
+            activity_date  TEXT NOT NULL,
+            channel        TEXT NOT NULL,
+            agent_id       TEXT NOT NULL,
+            agent_name     TEXT NOT NULL,
+            msg_count      INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (activity_date, channel, agent_id)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_caa_date "
+        "ON community_agent_activity_daily(activity_date)"
+    )
+
     # Community digest storage (Section 2).
     conn.execute("""
         CREATE TABLE IF NOT EXISTS community_digests (

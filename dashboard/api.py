@@ -680,6 +680,11 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
         })
     review_queue.sort(key=lambda r: r['score'] if r['score'] is not None else 0)
 
+    # Community activity — per-agent message counts in non-ticket channels.
+    # Read from community_agent_activity_daily, filtered to the window's
+    # UTC date range. Rendered at the bottom of the Support tab.
+    community_activity = _build_community_activity(start_utc, end_utc)
+
     return {
         'lastUpdated': now_utc.strftime('%Y-%m-%d %H:%M UTC'),
         'period': window_label,
@@ -695,6 +700,53 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
         'openTickets': open_table,
         'satisfaction': satisfaction,
         'reviewQueue': review_queue,
+        'communityActivity': community_activity,
+    }
+
+
+def _build_community_activity(start_utc: datetime, end_utc: datetime) -> dict[str, Any]:
+    """Aggregate per-agent message counts across community channels from
+    community_agent_activity_daily over the given UTC window."""
+    import sqlite3
+    start_date = start_utc.strftime('%Y-%m-%d')
+    end_date = end_utc.strftime('%Y-%m-%d')
+    conn = sqlite3.connect(config.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT activity_date, channel, agent_name, msg_count "
+            "FROM community_agent_activity_daily "
+            "WHERE activity_date >= ? AND activity_date <= ?",
+            (start_date, end_date),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    per_agent: dict[str, dict[str, int]] = {}
+    per_channel: Counter = Counter()
+    for r in rows:
+        ag = r['agent_name']
+        ch = r['channel']
+        n = r['msg_count']
+        per_agent.setdefault(ag, {})[ch] = per_agent.get(ag, {}).get(ch, 0) + n
+        per_channel[ch] += n
+
+    channels_sorted = [ch for ch, _ in per_channel.most_common()]
+    agents_list = []
+    for ag, ch_counts in per_agent.items():
+        agents_list.append({
+            'name': ag,
+            'total': sum(ch_counts.values()),
+            'channels': ch_counts,
+        })
+    agents_list.sort(key=lambda a: -a['total'])
+
+    return {
+        'totalAgentMsgs': sum(per_channel.values()),
+        'windowStart': start_date,
+        'windowEnd': end_date,
+        'channels': channels_sorted,
+        'agents': agents_list,
     }
 
 
