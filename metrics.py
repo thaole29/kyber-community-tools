@@ -107,6 +107,22 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None):
         if on_duty:
             slot(on_duty)['on_shift'] += 1
 
+        # Per-ticket manual override: if a reviewer flagged this ticket as
+        # buddy-covered by someone (e.g. Reus handled a community-rewards
+        # ticket during Mikaelson's shift but outside the time-windowed
+        # buddy table), rewrite the on-duty's 'missed' contribution into a
+        # 'buddy_covered' marker so the dashboard does not count it as a
+        # miss. The cross-helper's own contribution stays intact.
+        manual_buddy = t.get('manual_buddy_covered_by')
+        if manual_buddy and on_duty:
+            contribs = [
+                {**c, 'type': 'buddy_covered', 'mins': 0.0,
+                 'buddy': manual_buddy}
+                if c['type'] == 'missed' and c['agent'] == on_duty
+                else c
+                for c in contribs
+            ]
+
         # Derive responded / cross_help / missed counts directly from the
         # shift-split contributions: an agent's segment type IS the verdict.
         # Cross-help = agent replied OUTSIDE their own shift; we never label

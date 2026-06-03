@@ -78,6 +78,7 @@ def init_db():
         ('satisfaction_signals',         'TEXT'),
         ('satisfaction_source',          'TEXT'),
         ('satisfaction_classified_at',   'TEXT'),
+        ('manual_buddy_covered_by',      'TEXT'),
     ):
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE tickets ADD COLUMN {col} {ddl}")
