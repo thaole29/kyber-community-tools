@@ -211,12 +211,27 @@ def aggregate_response_events(events):
         if user_at is None or agent_at is None or user_at >= agent_at:
             continue
         contribs = config.compute_frt_contributions(user_at, agent_at, responding_agent=responder)
+        # One-off waiver: a ticket flagged manual_buddy_covered_by is treated
+        # as fully covered — rewrite EVERY 'missed' segment (any agent) on this
+        # ticket into a zero-minute buddy_covered marker so it never charges a
+        # miss, mirroring aggregate_per_agent (which waives the on-duty agent).
+        manual_buddy = e.get('manual_buddy_covered_by')
+        if manual_buddy:
+            contribs = [
+                {**c, 'type': 'buddy_covered', 'mins': 0.0, 'buddy': manual_buddy}
+                if c.get('type') == 'missed' else c
+                for c in contribs
+            ]
         et = e.get('event_type')
         for c in contribs:
             agent = c.get('agent')
             mins = c.get('mins')
             ctype = c.get('type')
             if not agent or mins is None:
+                continue
+            # buddy_covered is a zero-minute marker — never count it toward any
+            # response-time stat (all/first/followup/missed/cross_help).
+            if ctype == 'buddy_covered':
                 continue
             slot = out.setdefault(agent, {
                 'all_mins': [],

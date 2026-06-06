@@ -683,15 +683,21 @@ def get_response_events_in_range(start_utc, end_utc, agent=None):
     Optional agent filter (matches normalized name)."""
     conn = get_connection()
     try:
+        # LEFT JOIN the ticket's manual_buddy_covered_by so the response-events
+        # accountability path can honor the same one-off waiver that
+        # aggregate_per_agent applies (a manually buddy-covered ticket should
+        # not charge anyone a 'missed' segment).
         sql = (
-            "SELECT * FROM ticket_response_events "
-            "WHERE agent_msg_at >= ? AND agent_msg_at <= ?"
+            "SELECT e.*, t.manual_buddy_covered_by AS manual_buddy_covered_by "
+            "FROM ticket_response_events e "
+            "LEFT JOIN tickets t ON t.ticket_id = e.ticket_id "
+            "WHERE e.agent_msg_at >= ? AND e.agent_msg_at <= ?"
         )
         params = [start_utc.isoformat(), end_utc.isoformat()]
         if agent:
-            sql += " AND agent_name = ?"
+            sql += " AND e.agent_name = ?"
             params.append(agent)
-        sql += " ORDER BY agent_msg_at"
+        sql += " ORDER BY e.agent_msg_at"
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
     finally:
