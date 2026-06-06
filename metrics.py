@@ -95,6 +95,11 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None):
                 'buddy_covered': 0,
                 'buddy_covered_by': {},  # {buddy_name: count}
                 'buddy_covered_tickets': [],  # list of ticket ids
+                # Tickets where this agent was on-duty when a PREVIOUS shift's
+                # owner answered their own ticket late, spilling into this
+                # agent's shift. Not a miss — just on their radar to follow up.
+                'followup': 0,
+                'followup_tickets': [],  # list of ticket ids
             }
         return out[name]
 
@@ -141,6 +146,10 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None):
                 if buddy:
                     s['buddy_covered_by'][buddy] = s['buddy_covered_by'].get(buddy, 0) + 1
                 s['buddy_covered_tickets'].append(tid)
+            elif ctype == 'followup' and c.get('agent'):
+                s = slot(c['agent'])
+                s['followup'] += 1
+                s['followup_tickets'].append(tid)
         for ag in {c['agent'] for c in contribs if c['type'] == 'missed' and c['agent']}:
             slot(ag)['missed'] += 1
 
@@ -151,8 +160,9 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None):
             s = slot(agent)
             mins = c['mins']
             ctype = c['type']
-            # buddy_covered is a marker only (mins=0); skip FRT/SLA scoring.
-            if ctype == 'buddy_covered':
+            # buddy_covered / followup are markers only (mins=0); skip
+            # FRT/SLA scoring so they never count toward a miss or average.
+            if ctype in ('buddy_covered', 'followup'):
                 continue
             if ctype in ('responded', 'cross_help'):
                 s['frts'].append(mins)

@@ -269,6 +269,11 @@ def compute_frt_contributions(start_dt, end_dt, responding_agent=None):
       - 'missed'     : any earlier segment whose shift agent did NOT respond
                        during their shift before it ended. Agent is "blamed"
                        for the time the user was waiting on their watch.
+      - 'followup'   : marker (mins=0) for the agent on duty when a PREVIOUS
+                       shift's owner answered their OWN ticket late, spilling
+                       into this shift. They never owned the wait, so they are
+                       NOT charged a miss — the ticket is just on their radar
+                       to follow up. The late responder owns the whole gap.
 
     Cross-shift split (the case the user described):
       Ticket waits during Shift X → X ends → Shift Y agent eventually replies.
@@ -288,6 +293,7 @@ def compute_frt_contributions(start_dt, end_dt, responding_agent=None):
 
     contributions = []
     cursor = start_dt
+    prior_agents = set()  # on-duty agents of segments already traversed
     while cursor < end_dt:
         shift_label, shift_agent = get_on_duty_agent(cursor)
         boundary = _next_shift_boundary(cursor)
@@ -316,6 +322,30 @@ def compute_frt_contributions(start_dt, end_dt, responding_agent=None):
             # NOT marked missed; the buddy still gets cross_help credit
             # for the actual wait time.
             cross_help_mins = (end_dt - cursor).total_seconds() / 60.0
+            # CASE B (previous-shift owner finishing late): the responder was
+            # on-duty in an EARLIER segment of this same wait — i.e. they are
+            # answering their OWN ticket late, spilling past their shift end
+            # into a later agent's shift. The later on-duty agent (shift_agent)
+            # never owned this wait, so they are NOT charged a miss; they only
+            # get a zero-minute 'followup' marker (the ticket is now on their
+            # radar to follow up). The responder owns the whole gap: their
+            # earlier-shift miss was already recorded, and this final segment
+            # is their actual (late) response delivery.
+            if responding_agent and responding_agent in prior_agents:
+                contributions.append({
+                    'agent': responding_agent,
+                    'shift_label': None,
+                    'mins': round(cross_help_mins, 2),
+                    'type': 'responded',
+                })
+                contributions.append({
+                    'agent': shift_agent,
+                    'shift_label': shift_label,
+                    'mins': 0.0,
+                    'type': 'followup',
+                })
+                cursor = end_dt
+                continue
             if is_shift_buddy(shift_agent, responding_agent, end_dt):
                 if responding_agent:
                     contributions.append({
@@ -361,6 +391,7 @@ def compute_frt_contributions(start_dt, end_dt, responding_agent=None):
                 'mins': round(mins, 2),
                 'type': 'missed',
             })
+            prior_agents.add(shift_agent)
             cursor = segment_end
 
     return contributions
