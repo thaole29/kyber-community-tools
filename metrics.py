@@ -178,6 +178,17 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None):
             if s['slowest'] is None or mins > s['slowest'][1]:
                 s['slowest'] = (tid, round(mins, 2))
 
+    # A ticket breaches SLA once per agent, even when several shift-split
+    # segments of the SAME ticket each exceed the threshold (e.g. a 'missed'
+    # segment AND the late 'responded' segment of a cross-boundary reply).
+    # Collapse to one entry per ticket, keeping its largest contribution.
+    for s in out.values():
+        best = {}
+        for tid, mins in s['breaches']:
+            if tid not in best or mins > best[tid]:
+                best[tid] = mins
+        s['breaches'] = sorted(best.items(), key=lambda kv: -kv[1])
+
     return out
 
 
