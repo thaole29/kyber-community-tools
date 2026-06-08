@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Project Data Chatbot</title>
+  <style>
+    :root { --bg:#0f172a; --panel:#1e293b; --me:#2563eb; --bot:#334155; --txt:#e2e8f0; --mut:#94a3b8; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--txt); height:100vh; display:flex; flex-direction:column; }
+    header { padding:12px 16px; background:var(--panel); font-weight:600; border-bottom:1px solid #334155; display:flex; justify-content:space-between; align-items:center; }
+    header small { color:var(--mut); font-weight:400; }
+    #log { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
+    .msg { max-width:80%; padding:10px 14px; border-radius:12px; white-space:pre-wrap; line-height:1.45; }
+    .me { align-self:flex-end; background:var(--me); }
+    .bot { align-self:flex-start; background:var(--bot); }
+    .meta { font-size:12px; color:var(--mut); margin-top:6px; }
+    .meta code { background:#0b1220; padding:1px 5px; border-radius:4px; }
+    form { display:flex; gap:8px; padding:12px 16px; background:var(--panel); border-top:1px solid #334155; }
+    input { flex:1; padding:10px 12px; border-radius:8px; border:1px solid #475569; background:#0b1220; color:var(--txt); font-size:15px; }
+    button { padding:10px 18px; border:0; border-radius:8px; background:var(--me); color:#fff; font-weight:600; cursor:pointer; }
+    button:disabled { opacity:.5; cursor:default; }
+    .dim { color:var(--mut); }
+  </style>
+</head>
+<body>
+  <header>
+    <span>🤖 Project Data Chatbot</span>
+    <small id="status">checking…</small>
+  </header>
+  <div id="log">
+    <div class="msg bot">Xin chào! Hỏi tôi về tickets, agent, SLA, hay community digest của project.
+<span class="dim">Ví dụ: "Tuần này agent nào miss nhiều nhất?" hoặc "Người dùng phàn nàn gì về limit order?"</span></div>
+  </div>
+  <form id="f">
+    <input id="q" autocomplete="off" placeholder="Nhập câu hỏi…" />
+    <button id="send" type="submit">Gửi</button>
+  </form>
+
+  <script>
+    const log = document.getElementById('log');
+    const form = document.getElementById('f');
+    const input = document.getElementById('q');
+    const sendBtn = document.getElementById('send');
+    const history = [];
+
+    function add(text, cls, metaHtml) {
+      const div = document.createElement('div');
+      div.className = 'msg ' + cls;
+      div.textContent = text;
+      if (metaHtml) {
+        const m = document.createElement('div');
+        m.className = 'meta';
+        m.innerHTML = metaHtml;
+        div.appendChild(m);
+      }
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+      return div;
+    }
+
+    fetch('/health').then(r => r.json()).then(h => {
+      document.getElementById('status').textContent =
+        `${h.llm_provider}/${h.llm_model} · ${h.index?.chunks ?? 0} chunks`;
+    }).catch(() => document.getElementById('status').textContent = 'offline');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const q = input.value.trim();
+      if (!q) return;
+      add(q, 'me');
+      input.value = '';
+      sendBtn.disabled = true;
+      const thinking = add('…', 'bot');
+      try {
+        const res = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q, history })
+        });
+        const data = await res.json();
+        thinking.remove();
+        if (data.error) { add('⚠️ ' + data.error, 'bot'); return; }
+        let meta = '';
+        if (data.sql) meta += `SQL: <code>${escapeHtml(data.sql)}</code><br/>`;
+        if (data.sources && data.sources.length)
+          meta += 'Nguồn: ' + data.sources.map(s => `<code>${escapeHtml(s.ref).slice(0,40)}</code>`).join(' ');
+        add(data.answer || '(không có trả lời)', 'bot', meta || null);
+        history.push({ role: 'user', content: q });
+        history.push({ role: 'assistant', content: data.answer || '' });
+      } catch (err) {
+        thinking.remove();
+        add('⚠️ Lỗi kết nối: ' + err.message, 'bot');
+      } finally {
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    });
+
+    function escapeHtml(s) {
+      return (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    }
+  </script>
+</body>
+</html>

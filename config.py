@@ -33,6 +33,29 @@ GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 
 # =====================================================
+# CHATBOT (RAG over project data) — Section 3
+# =====================================================
+# Standalone Q&A chatbot over tickets.db + community_digests. The chat-completion
+# LLM is provider-agnostic so a bring-your-own endpoint can be plugged in later
+# via .env. Until CHATBOT_LLM_* point at your own model, the adapter falls back
+# to Gemini (reusing GEMINI_API_KEY) so the bot is fully testable today.
+CHATBOT_LLM_PROVIDER = os.getenv('CHATBOT_LLM_PROVIDER', 'gemini')   # gemini | openai | anthropic
+CHATBOT_LLM_BASE_URL = os.getenv('CHATBOT_LLM_BASE_URL')            # e.g. http://host:port/v1 for OpenAI-compatible
+CHATBOT_LLM_API_KEY = os.getenv('CHATBOT_LLM_API_KEY')             # falls back to GEMINI_API_KEY for the gemini provider
+CHATBOT_LLM_MODEL = os.getenv('CHATBOT_LLM_MODEL', GEMINI_MODEL)
+CHATBOT_LLM_MAX_TOKENS = int(os.getenv('CHATBOT_LLM_MAX_TOKENS', '1500'))
+CHATBOT_LLM_TEMPERATURE = float(os.getenv('CHATBOT_LLM_TEMPERATURE', '0.2'))
+
+# Embeddings are independent of the chat LLM (Gemini free tier by default).
+CHATBOT_EMBED_PROVIDER = os.getenv('CHATBOT_EMBED_PROVIDER', 'gemini')
+CHATBOT_EMBED_MODEL = os.getenv('CHATBOT_EMBED_MODEL', 'gemini-embedding-001')
+
+# Vector index lives in its own SQLite file so tickets.db schema stays untouched.
+CHATBOT_INDEX_DB = os.getenv('CHATBOT_INDEX_DB', 'chatbot/chatbot_index.db')
+CHATBOT_TOP_K = int(os.getenv('CHATBOT_TOP_K', '6'))
+CHATBOT_PORT = int(os.getenv('CHATBOT_PORT', '8100'))
+
+# =====================================================
 # COMMUNITY DIGEST CONFIG (Section 2)
 # =====================================================
 # Discord channel NAMES (without leading '#') to monitor for the daily

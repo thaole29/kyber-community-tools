@@ -6,3 +6,7 @@ requests
 aiohttp
 discord.py
 google-genai
+# Dashboard API + standalone chatbot service
+fastapi
+uvicorn
+numpy
