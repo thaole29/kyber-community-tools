@@ -55,6 +55,12 @@ CHATBOT_INDEX_DB = os.getenv('CHATBOT_INDEX_DB', 'chatbot/chatbot_index.db')
 CHATBOT_TOP_K = int(os.getenv('CHATBOT_TOP_K', '6'))
 CHATBOT_PORT = int(os.getenv('CHATBOT_PORT', '8100'))
 
+# HTTP Basic Auth for the chatbot (the service is exposed via a public tunnel).
+# Fail-closed: if these are unset, every route returns 503 so an open endpoint
+# is never served by accident. Set both in .env to enable access.
+CHATBOT_AUTH_USER = os.getenv('CHATBOT_AUTH_USER')
+CHATBOT_AUTH_PASS = os.getenv('CHATBOT_AUTH_PASS')
+
 # =====================================================
 # COMMUNITY DIGEST CONFIG (Section 2)
 # =====================================================

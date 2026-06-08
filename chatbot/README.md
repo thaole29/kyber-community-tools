@@ -80,3 +80,32 @@ If your endpoint isn't one of these shapes, add a small branch in
 
 All settings live in the root `config.py` (`CHATBOT_*`), per the project's
 single-source-of-truth rule.
+
+## Auth
+
+The server is **HTTP Basic Auth, fail-closed**: every route returns `503`
+until both credentials are set in `.env`, and `401` on a wrong login. Always
+set these before exposing the server (e.g. via a tunnel):
+
+```env
+CHATBOT_AUTH_USER=someuser
+CHATBOT_AUTH_PASS=a-strong-password
+```
+
+The password is a secret — add it the same hidden way as the API key:
+
+```bash
+read -rs -p "auth pass: " P && printf '\nCHATBOT_AUTH_PASS=%s\n' "$P" >> .env && unset P
+```
+
+## Public URL
+
+Exposed on its own Cloudflare Quick Tunnel (separate from the dashboard):
+
+```bash
+uvicorn chatbot.server:app --host 127.0.0.1 --port 8100   # terminal 1
+cloudflared tunnel --url http://127.0.0.1:8100            # terminal 2 -> prints a *.trycloudflare.com URL
+```
+
+Quick Tunnel URLs are ephemeral (change on restart). For a stable URL + auto-run
+on boot, use a named Cloudflare tunnel + a launchd plist.

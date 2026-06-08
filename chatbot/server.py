@@ -14,11 +14,13 @@ Runs on its own port; touches nothing in dashboard/ or bot.py.
 
 from __future__ import annotations
 
+import secrets
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -30,7 +32,32 @@ from chatbot import embeddings, llm_client, retriever  # noqa: E402
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
-app = FastAPI(title="Project Data Chatbot")
+_basic = HTTPBasic()
+
+
+def require_auth(credentials: HTTPBasicCredentials = Depends(_basic)):
+    """HTTP Basic Auth gate. Fail-closed: 503 if no credentials are configured
+    so the public tunnel never serves an unprotected endpoint by accident."""
+    user, pw = config.CHATBOT_AUTH_USER, config.CHATBOT_AUTH_PASS
+    if not user or not pw:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Auth not configured — set CHATBOT_AUTH_USER and CHATBOT_AUTH_PASS in .env",
+        )
+    ok = secrets.compare_digest(credentials.username, user) & secrets.compare_digest(
+        credentials.password, pw
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return True
+
+
+# Auth applied to every route in the app.
+app = FastAPI(title="Project Data Chatbot", dependencies=[Depends(require_auth)])
 
 ANSWER_SYSTEM = (
     "You are a support-analytics assistant for the Kyber community support team. "
