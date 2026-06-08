@@ -1,5 +1,8 @@
-# Secrets
+# Secrets — .env and any backups/variants (.env.save from nano, .env.bak, ...)
+# but keep the no-values template tracked.
 .env
+.env.*
+!.env.example
 
 # Python
 __pycache__/
