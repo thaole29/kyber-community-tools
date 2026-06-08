@@ -36,6 +36,11 @@ def _to_utc(s):
 def contributions_for_ticket(ticket):
     """Return the per-agent FRT contribution list for one ticket, or [] if
     the ticket has no agent response yet (FRT is undefined)."""
+    # Ad-hoc excluded (e.g. test tickets): no FRT/miss attribution at all.
+    # Returning [] here also makes aggregate_per_agent skip it entirely
+    # (its `if not contribs: continue` guard runs before the on_shift count).
+    if ticket.get('excluded_from_metrics'):
+        return []
     end = _to_utc(ticket.get('first_responded_at'))
     if end is None:
         return []
@@ -214,6 +219,9 @@ def aggregate_response_events(events):
     """
     out = {}
     for e in events:
+        # Ad-hoc excluded tickets (e.g. test) contribute no response/follow-up time.
+        if e.get('excluded_from_metrics'):
+            continue
         responder = e.get('agent_name')
         if not responder:
             continue

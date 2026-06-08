@@ -429,6 +429,11 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
     created = database.get_tickets_in_range(start_utc, end_utc)
     open_all = database.get_open_tickets()
 
+    # Drop ad-hoc excluded tickets (e.g. test tickets) from every dashboard
+    # figure — counts, FRT, product mix, per-agent stats, open table.
+    created = [t for t in created if not t.get('excluded_from_metrics')]
+    open_all = [t for t in open_all if not t.get('excluded_from_metrics')]
+
     # Headline metrics
     total = len(created)
     resolved = sum(1 for t in created if t.get('closed_at'))

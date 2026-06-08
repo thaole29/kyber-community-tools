@@ -79,6 +79,8 @@ def init_db():
         ('satisfaction_source',          'TEXT'),
         ('satisfaction_classified_at',   'TEXT'),
         ('manual_buddy_covered_by',      'TEXT'),
+        # Ad-hoc exclusion (test tickets): drop from metrics + dashboard.
+        ('excluded_from_metrics',        'BOOLEAN DEFAULT 0'),
     ):
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE tickets ADD COLUMN {col} {ddl}")
@@ -688,7 +690,8 @@ def get_response_events_in_range(start_utc, end_utc, agent=None):
         # aggregate_per_agent applies (a manually buddy-covered ticket should
         # not charge anyone a 'missed' segment).
         sql = (
-            "SELECT e.*, t.manual_buddy_covered_by AS manual_buddy_covered_by "
+            "SELECT e.*, t.manual_buddy_covered_by AS manual_buddy_covered_by, "
+            "t.excluded_from_metrics AS excluded_from_metrics "
             "FROM ticket_response_events e "
             "LEFT JOIN tickets t ON t.ticket_id = e.ticket_id "
             "WHERE e.agent_msg_at >= ? AND e.agent_msg_at <= ?"
