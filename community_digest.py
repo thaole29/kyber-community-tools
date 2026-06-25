@@ -17,7 +17,7 @@ import asyncio
 import json
 import re
 from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import aiohttp
@@ -169,10 +169,12 @@ def _strip_code_fence(text):
     return text.strip()
 
 
-async def fetch_channel_messages(channel, since_utc):
-    """Pull human messages from a Discord channel since `since_utc`, oldest first."""
+async def fetch_channel_messages(channel, since_utc, before_utc=None):
+    """Pull human messages from a Discord channel in (since_utc, before_utc],
+    oldest first. before_utc=None means up to now (live mode); set it to bound
+    a past calendar day when backfilling."""
     msgs = []
-    async for msg in channel.history(limit=None, after=since_utc, oldest_first=True):
+    async for msg in channel.history(limit=None, after=since_utc, before=before_utc, oldest_first=True):
         if msg.author.bot:
             continue
         cleaned = clean_message_text(msg.content)
@@ -212,18 +214,33 @@ async def summarize_channel(gemini, channel_name, raw_messages):
         messages_block=block,
     )
 
+    # Gemini free tier caps at 5 requests/min, so a 9-channel run reliably
+    # trips 429 RESOURCE_EXHAUSTED partway through. Retry with backoff (the
+    # API suggests ~13s) so every channel still gets summarized.
     try:
-        resp = await gemini.aio.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=genai_types.GenerateContentConfig(
-                max_output_tokens=LLM_MAX_TOKENS,
-                response_mime_type="application/json",
-                thinking_config=genai_types.ThinkingConfig(
-                    thinking_budget=LLM_THINKING_BUDGET,
-                ),
-            ),
-        )
+        resp = None
+        for attempt in range(5):
+            try:
+                resp = await gemini.aio.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(
+                        max_output_tokens=LLM_MAX_TOKENS,
+                        response_mime_type="application/json",
+                        thinking_config=genai_types.ThinkingConfig(
+                            thinking_budget=LLM_THINKING_BUDGET,
+                        ),
+                    ),
+                )
+                break
+            except Exception as e:
+                msg = str(e)
+                if ("RESOURCE_EXHAUSTED" in msg or "429" in msg) and attempt < 4:
+                    print(f"[RATE] #{channel_name}: 429, backing off 15s "
+                          f"(attempt {attempt + 1}/5)…")
+                    await asyncio.sleep(15)
+                    continue
+                raise
         text = _strip_code_fence(resp.text or "")
         return json.loads(text)
     except json.JSONDecodeError as e:
@@ -368,8 +385,16 @@ async def send_telegram(text):
     return all_ok
 
 
-async def run_digest():
-    """Main entry — connect to Discord, run pipeline, send to Telegram, exit."""
+async def run_digest(target_date=None, post_telegram=True):
+    """Main entry — connect to Discord, run pipeline, optionally send to Telegram.
+
+    Live mode (target_date=None): trailing 24h ending now, digest_date=today,
+    posts to Telegram + touches the cron marker.
+
+    Backfill mode (target_date='YYYY-MM-DD'): the full calendar day in UTC, saved
+    to community_digests under that date. Caller sets post_telegram=False so a
+    missed day can be reconstructed into the DB (for the dashboard) without
+    spamming the staff group or touching the marker."""
     if not config.GEMINI_API_KEY:
         print("❌ GEMINI_API_KEY not set.")
         return
@@ -386,9 +411,16 @@ async def run_digest():
     client = discord.Client(intents=intents)
     gemini = genai.Client(api_key=config.GEMINI_API_KEY)
 
-    now_utc = datetime.now(tz=timezone.utc)
-    since = now_utc - timedelta(hours=24)
-    digest_date = now_utc.strftime('%Y-%m-%d')
+    if target_date:
+        day = date.fromisoformat(target_date)
+        since = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+        until = since + timedelta(days=1)       # bound to that calendar day
+        digest_date = target_date
+    else:
+        now_utc = datetime.now(tz=timezone.utc)
+        since = now_utc - timedelta(hours=24)
+        until = None                            # up to now
+        digest_date = now_utc.strftime('%Y-%m-%d')
 
     @client.event
     async def on_ready():
@@ -413,7 +445,7 @@ async def run_digest():
 
                 print(f"[FETCH] #{ch_name}…")
                 try:
-                    raw = await fetch_channel_messages(channel, since)
+                    raw = await fetch_channel_messages(channel, since, before_utc=until)
                 except discord.Forbidden:
                     print(f"⚠️  Missing permission to read #{ch_name}.")
                     results.append({
@@ -426,7 +458,13 @@ async def run_digest():
                 results.append(result)
                 database.save_community_digest(digest_date, ch_name, result)
 
-            local_label = now_utc.astimezone(config.LOCAL_TZ).strftime('%b %d, %Y')
+            saved = sum(1 for r in results if not r.get("skip"))
+            if not post_telegram:
+                print(f"✅ Backfill for {digest_date}: saved {saved} channel(s) to DB "
+                      f"(Telegram + marker skipped).")
+                return
+
+            local_label = datetime.now(tz=config.LOCAL_TZ).strftime('%b %d, %Y')
             digest_text = format_telegram_digest(local_label, results)
             ok = await send_telegram(digest_text)
             if ok:
@@ -441,4 +479,14 @@ async def run_digest():
 
 
 if __name__ == "__main__":
-    asyncio.run(run_digest())
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Daily community digest (or backfill a past day).")
+    ap.add_argument("--date", help="Backfill this UTC day YYYY-MM-DD into the DB "
+                                    "(implies --no-telegram, no marker).")
+    ap.add_argument("--no-telegram", action="store_true",
+                    help="Run the pipeline + save to DB but do not post to Telegram.")
+    args = ap.parse_args()
+
+    post = not (args.date or args.no_telegram)
+    asyncio.run(run_digest(target_date=args.date, post_telegram=post))
