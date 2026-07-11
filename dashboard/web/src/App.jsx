@@ -12,6 +12,13 @@ const SENTIMENT_COLORS = {
   neutral: "#94a3b8",
 };
 
+// Temporarily hide all "missed" surfacing on the dashboard: the underlying
+// miss attribution has known-bad data (e.g. an on-duty agent who DID reply
+// later is still charged a miss). Flip back to true once the metrics rule is
+// fixed. Guards the Missed stat tile, the 🚫 Missed detail line, and the
+// "tickets missed" action item.
+const SHOW_MISSED = false;
+
 // ============================================================
 // SHARED COMPONENTS
 // ============================================================
@@ -243,11 +250,13 @@ function AgentCard({ agent, actions }) {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${SHOW_MISSED ? 4 : 3}, 1fr)`, gap: 8, marginBottom: 14 }}>
         {[
           { label: "On-Shift", value: agent.onShift, color: "#6366f1" },
           { label: "Responded", value: agent.responded, color: "#22c55e" },
-          { label: "Missed", value: agent.missed, color: agent.missed > 0 ? "#ef4444" : "#22c55e" },
+          ...(SHOW_MISSED
+            ? [{ label: "Missed", value: agent.missed, color: agent.missed > 0 ? "#ef4444" : "#22c55e" }]
+            : []),
           { label: "Cross-Help", value: agent.crossHelp, color: "#06b6d4" },
         ].map((s, i) => (
           <div key={i} style={{ textAlign: "center", padding: "8px 4px", background: "rgba(255,255,255,0.03)", borderRadius: 8 }}>
@@ -270,9 +279,9 @@ function AgentCard({ agent, actions }) {
         <span>🐢 <strong style={{ color: "#ef4444" }}>{agent.slowest?.time ?? "-"}m</strong> ({agent.slowest?.ticket ?? "-"})</span>
       </div>
 
-      {(agent.missedCount > 0 || agent.totalCrossHelpMins > 0) && (
+      {((SHOW_MISSED && agent.missedCount > 0) || agent.totalCrossHelpMins > 0) && (
         <div style={{ display: "flex", gap: 16, marginBottom: 14, fontSize: 12, color: "#94a3b8", flexWrap: "wrap" }}>
-          {agent.missedCount > 0 && (
+          {SHOW_MISSED && agent.missedCount > 0 && (
             <span title="Total minutes the on-duty agent was personally accountable for unanswered messages until their shift ended">
               🚫 Missed:
               <strong style={{ color: "#ef4444", marginLeft: 4 }}>{formatMins(agent.totalMissedMins)}</strong>

@@ -101,8 +101,16 @@ def generate_weekly_report(end_date=None):
     # Shift-split aggregation: each agent's FRT pool counts both their own
     # responses AND time the user spent waiting on their watch when the
     # ticket was eventually picked up by someone else.
-    tw_per_agent = metrics.aggregate_per_agent(this_week)
-    pw_per_agent = metrics.aggregate_per_agent(prev_week)
+    # Waive the miss for an on-duty agent who actually replied to the ticket
+    # (worked it, just not first to touch) — same rule as the dashboard.
+    tw_responders = metrics.responders_by_ticket(
+        database.get_response_events_in_range(start_utc, end_utc))
+    pw_responders = metrics.responders_by_ticket(
+        database.get_response_events_in_range(prev_start, prev_end))
+    tw_per_agent = metrics.aggregate_per_agent(
+        this_week, responded_agents_by_ticket=tw_responders)
+    pw_per_agent = metrics.aggregate_per_agent(
+        prev_week, responded_agents_by_ticket=pw_responders)
 
     for agent in agents:
         tw_frts = tw_per_agent.get(agent, {}).get('frts', [])

@@ -38,6 +38,10 @@ import database  # noqa: E402
 
 WEB_DIST = Path(__file__).resolve().parent / 'web' / 'dist'
 
+# Temporarily suppress "missed"-based action items while the miss attribution
+# data is being corrected (mirrors SHOW_MISSED in web/src/App.jsx).
+SHOW_MISSED_ACTIONS = False
+
 app = FastAPI(title='KyberSwap Community Dashboard')
 
 
@@ -393,7 +397,10 @@ def _agent_action_items(agent: dict, product_breakdown: list[dict]) -> list[dict
                     f"({', '.join(agent['breaches'][:3])}). "
                     f"Investigate availability during {agent['shift']}.",
         })
-    if agent['missed'] > 0:
+    # Temporarily suppressed alongside the dashboard's SHOW_MISSED flag: the
+    # miss attribution has known-bad data (on-duty agents who did reply later
+    # are still charged a miss). Re-enable once the metrics rule is fixed.
+    if SHOW_MISSED_ACTIONS and agent['missed'] > 0:
         items.append({
             'priority': 'high',
             'text': f"{agent['missed']} tickets missed during own shift. "
@@ -519,12 +526,17 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
     # wait is credited a contribution. metrics.aggregate_per_agent walks
     # every responded ticket and returns those contributions per agent.
     import metrics
-    per_agent = metrics.aggregate_per_agent(created)
     # Per-response-event rollup: every (user_msg → agent_reply) gap in the
     # window, including follow-ups. Used to expose avg_response_all alongside
-    # the FRT-split avgFRT (first response only).
+    # the FRT-split avgFRT (first response only). Also drives the "on-duty
+    # agent who actually replied is not charged a miss" waiver — build the
+    # ticket→responders map once and feed both aggregators.
     response_events = database.get_response_events_in_range(start_utc, end_utc)
-    per_agent_resp = metrics.aggregate_response_events(response_events)
+    responders_map = metrics.responders_by_ticket(response_events)
+    per_agent = metrics.aggregate_per_agent(
+        created, responded_agents_by_ticket=responders_map)
+    per_agent_resp = metrics.aggregate_response_events(
+        response_events, responded_agents_by_ticket=responders_map)
     agents = []
     for shift in config.SHIFTS:
         agent_name = shift['agent']

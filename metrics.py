@@ -55,7 +55,44 @@ def contributions_for_ticket(ticket):
     return config.compute_frt_contributions(start, end, responding_agent=responder)
 
 
-def aggregate_per_agent(tickets, sla_threshold_mins=None):
+def responders_by_ticket(events):
+    """Map ticket_id -> set of canonical agent names who posted at least one
+    reply on that ticket (built from ticket_response_events).
+
+    Feeds the "on-duty agent who actually worked the ticket is not charged a
+    miss" waiver (user rule 2026-07-11): if the on-duty agent replied at any
+    point — even as a follow-up, i.e. they simply were not the FIRST to touch
+    the ticket — they owned and handled it, so the 'missed' segment charged to
+    them is dropped rather than counted."""
+    out = {}
+    for e in events:
+        tid = e.get('ticket_id')
+        name = e.get('agent_name')
+        if not tid or not name:
+            continue
+        out.setdefault(tid, set()).add(config.normalize_agent(name))
+    return out
+
+
+def _waive_missed_for_responders(contribs, tid, responded_agents_by_ticket):
+    """Drop 'missed' segments charged to an agent who replied to this ticket.
+
+    Mirrors the manual_buddy_covered_by waiver, but keyed off actual reply
+    activity from the response-event log. No-op when the map is None (callers
+    that don't have the event log keep the original strict attribution)."""
+    if responded_agents_by_ticket is None:
+        return contribs
+    replied = responded_agents_by_ticket.get(tid)
+    if not replied:
+        return contribs
+    return [
+        c for c in contribs
+        if not (c.get('type') == 'missed'
+                and config.normalize_agent(c.get('agent')) in replied)
+    ]
+
+
+def aggregate_per_agent(tickets, sla_threshold_mins=None, responded_agents_by_ticket=None):
     """Walk every responded ticket, split FRT across shift boundaries, and
     bucket the contributions by agent.
 
@@ -113,6 +150,9 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None):
         if not contribs:
             continue
         tid = t['ticket_id']
+        # Waive the miss for an on-duty agent who actually replied to this
+        # ticket (they worked it, just weren't first to touch it).
+        contribs = _waive_missed_for_responders(contribs, tid, responded_agents_by_ticket)
         on_duty = t.get('on_duty_agent_name')  # on-duty at ticket creation
         if on_duty:
             slot(on_duty)['on_shift'] += 1
@@ -197,7 +237,7 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None):
     return out
 
 
-def aggregate_response_events(events):
+def aggregate_response_events(events, responded_agents_by_ticket=None):
     """Apply the FRT-split accountability rule to ticket_response_events
     rows and bucket by agent.
 
@@ -238,6 +278,10 @@ def aggregate_response_events(events):
         # handful of manually-flagged tickets; nothing else changes.
         if e.get('manual_buddy_covered_by'):
             contribs = [c for c in contribs if c.get('type') != 'missed']
+        # Waive the miss for an on-duty agent who actually replied to this
+        # ticket at some point (user rule 2026-07-11).
+        contribs = _waive_missed_for_responders(
+            contribs, e.get('ticket_id'), responded_agents_by_ticket)
         et = e.get('event_type')
         for c in contribs:
             agent = c.get('agent')
