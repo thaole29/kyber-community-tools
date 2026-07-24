@@ -587,6 +587,24 @@ def get_tickets_closed_in_range(start_utc, end_utc):
         conn.close()
 
 
+def get_newest_ticket_created_at():
+    """ISO timestamp of the most recently created ticket, or None.
+
+    Deliberately unfiltered (includes excluded_from_metrics rows): this is an
+    ingestion-liveness signal, and any row arriving proves bot.py is still
+    recording. Used by the dashboard to tell a quiet period apart from a dead
+    collector.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT MAX(created_at) AS m FROM tickets WHERE created_at IS NOT NULL"
+        ).fetchone()
+        return row['m'] if row else None
+    finally:
+        conn.close()
+
+
 def get_all_tickets():
     """Get all tickets."""
     conn = get_connection()

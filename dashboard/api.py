@@ -437,6 +437,41 @@ def _agent_action_items(agent: dict, product_breakdown: list[dict]) -> list[dict
     return items[:4]
 
 
+# A dead bot.py stops producing tickets, but the snapshot cron keeps running
+# and emits a payload that looks perfectly fresh — just full of zeros. Nothing
+# in the UI told a quiet day apart from a downed collector, which is why the
+# 2026-07-15..24 outage sat unnoticed for 9 days. Surface the age of the
+# newest row so the UI can flag it.
+#
+# 96h, not 72h: the longest legitimate quiet spell in the trailing 30 days was
+# ~72h (10-13 Jul), so a 72h trigger would cry wolf. 96h would still have
+# caught the outage on 19 Jul — 5 days before it was found by hand.
+INGEST_STALE_AFTER_HOURS = 96
+
+
+def _build_data_health(now_utc: datetime) -> dict[str, Any]:
+    """Age of the freshest ticket in the DB, independent of the window.
+
+    Window-scoped counts cannot carry this signal: during an outage the window
+    is simply empty, which is indistinguishable from a slow week.
+    """
+    newest_iso = database.get_newest_ticket_created_at()
+    if not newest_iso:
+        return {'lastTicketAt': None, 'hoursSinceLastTicket': None,
+                'staleAfterHours': INGEST_STALE_AFTER_HOURS, 'isStale': True}
+
+    newest = datetime.fromisoformat(newest_iso)
+    if newest.tzinfo is None:
+        newest = newest.replace(tzinfo=timezone.utc)
+    hours = round((now_utc - newest).total_seconds() / 3600, 1)
+    return {
+        'lastTicketAt': newest.isoformat(),
+        'hoursSinceLastTicket': hours,
+        'staleAfterHours': INGEST_STALE_AFTER_HOURS,
+        'isStale': hours > INGEST_STALE_AFTER_HOURS,
+    }
+
+
 def build_support_payload(start_utc: datetime, end_utc: datetime,
                           window_label: str) -> dict[str, Any]:
     now_utc = datetime.now(tz=timezone.utc)
@@ -462,7 +497,13 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
     avg_frt = _safe_avg(frts)
     median_frt = _median(frts)
     responded = [t for t in created if t.get('response_time_mins') is not None]
-    breaches = [t for t in created if t.get('sla_breached')]
+    # Numerator and denominator MUST come from the same population. Counting
+    # breaches over `created` while dividing by `responded` let a ticket that
+    # breached but was never answered inflate the numerator without appearing
+    # below the line — understating compliance, and able to drive it negative
+    # once unanswered breaches outnumber answered tickets. Matches the
+    # convention daily_report.py already uses (both sides from responded).
+    breaches = [t for t in responded if t.get('sla_breached')]
     sla_compliance = (
         round((1 - len(breaches) / len(responded)) * 100, 1)
         if responded else 100.0
@@ -491,7 +532,11 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
         b_resolved = [t for t in bucket if t.get('closed_at')]
         b_frts = [t['response_time_mins'] for t in bucket
                   if t.get('response_time_mins') is not None]
-        b_breaches = sum(1 for t in bucket if t.get('sla_breached'))
+        # Same population rule as sla_compliance above — count breaches only
+        # among the answered tickets that form the denominator.
+        b_breaches = sum(1 for t in bucket
+                         if t.get('sla_breached')
+                         and t.get('response_time_mins') is not None)
         b_responded = len(b_frts)
         if b_responded == 0:
             sentiment = 'neutral'
@@ -711,6 +756,7 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
     community_activity = _build_community_activity(start_utc, end_utc)
 
     return {
+        'dataHealth': _build_data_health(now_utc),
         'lastUpdated': now_utc.strftime('%Y-%m-%d %H:%M UTC'),
         'period': window_label,
         'totalTickets': total,

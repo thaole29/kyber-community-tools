@@ -71,6 +71,46 @@ function PriorityBadge({ priority }) {
   );
 }
 
+// An outage renders as a page full of zeros that looks identical to a quiet
+// week — "🎉 No open tickets — backlog clear." is actively reassuring while the
+// collector is dead. Lead with the warning so nobody reads stale zeros as good
+// news.
+function StaleDataBanner({ health }) {
+  if (!health || !health.isStale) return null;
+  const days =
+    health.hoursSinceLastTicket == null
+      ? null
+      : (health.hoursSinceLastTicket / 24).toFixed(1);
+  const lastSeen = health.lastTicketAt
+    ? `${health.lastTicketAt.slice(0, 16).replace("T", " ")} UTC`
+    : null;
+
+  return (
+    <div
+      style={{
+        display: "flex", alignItems: "flex-start", gap: 10,
+        padding: "12px 16px", marginBottom: 16,
+        background: "rgba(239,68,68,0.10)",
+        border: "1px solid rgba(239,68,68,0.35)",
+        borderRadius: 10, color: "#fca5a5",
+        fontSize: 13, lineHeight: 1.5,
+      }}
+    >
+      <span style={{ fontSize: 16, lineHeight: 1.2 }}>⚠️</span>
+      <div>
+        <strong style={{ color: "#fecaca" }}>
+          Ticket ingestion may be down.
+        </strong>{" "}
+        {days === null
+          ? "No tickets have ever been recorded."
+          : `No new ticket in ${days} days (last seen ${lastSeen}).`}{" "}
+        Figures below are probably incomplete — check that <code>bot.py</code> is
+        running before trusting them.
+      </div>
+    </div>
+  );
+}
+
 function EmptyState({ message }) {
   return (
     <div style={{
@@ -592,6 +632,8 @@ function SupportHealthTab({ data }) {
 
   return (
     <>
+      <StaleDataBanner health={data.dataHealth} />
+
       {/* Stats Row */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
         {[
