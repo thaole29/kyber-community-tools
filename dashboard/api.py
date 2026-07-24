@@ -108,12 +108,20 @@ def _resolve_window(start: Optional[str], end: Optional[str]) -> tuple[datetime,
 
 def build_community_payload(start_dt: datetime, end_dt: datetime,
                             window_label: str) -> dict[str, Any]:
-    # Resolve which digest dates fall in this window. We treat the window
-    # END as exclusive (matches _resolve_window), so the last digest_date we
-    # accept is (end_dt - 1 day).
+    # Resolve which digest dates fall in this window.
+    #
+    # community_digest.py's LIVE mode (the daily cron) stamps
+    # digest_date = the RUN date while summarising the trailing 24h, so the
+    # row labelled D holds the content for roughly (D-1 02:00 .. D 02:00).
+    # A window ending at `end_dt` therefore wants digest_date up to and
+    # INCLUDING end_dt's own date — subtracting a day here skipped the
+    # freshest digest entirely and shifted every window one day into the
+    # past (real incident 2026-07-24: the 24h community panel resolved to a
+    # single missing date and rendered 0 messages while today's digest held
+    # 9 channels / 55 messages).
     span_days = (end_dt - start_dt).days
-    start_date_str = start_dt.date().isoformat()
-    end_date_str = (end_dt - timedelta(days=1)).date().isoformat()
+    start_date_str = (start_dt + timedelta(days=1)).date().isoformat()
+    end_date_str = end_dt.date().isoformat()
 
     rows = database.get_community_digests_in_range(start_date_str, end_date_str)
     if not rows:
