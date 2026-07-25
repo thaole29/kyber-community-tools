@@ -2,15 +2,18 @@
 daily_report.py
 
 Generates a comprehensive daily support team performance report
-with 6 sections matching the mechanism spec, and sends it to Telegram.
+and sends it to Telegram.
 
 Sections:
-  1. Overview (created, resolved, open, resolution rate, avg FRT)
-  2. Agent Performance (on-shift tickets, responded, missed)
+  1. Overview (created, resolved, resolution rate, avg FRT)
+  2. Agent Performance (on-shift tickets, responded, covered, missed)
   3. Response Time Breakdown (fastest, slowest, mean, median, p90)
   4. SLA Compliance (overall + per-agent with breach IDs)
   5. Additional Insights (busiest hour, cross-shift help, volume trend)
-  6. Open Tickets Requiring Attention
+
+Everything here is scoped to the 24h window. The open-ticket backlog is
+all-time, so it lives on the dashboard instead of this post (user rule
+2026-07-25) — the old section 6 and the "Still Open" counter were dropped.
 """
 
 import os
@@ -56,14 +59,12 @@ def generate_daily_report(target_date=None):
     # Fetch data
     created_tickets = database.get_tickets_in_range(start_utc, end_utc)
     closed_tickets = database.get_tickets_closed_in_range(start_utc, end_utc)
-    open_tickets = database.get_open_tickets()
 
     # =====================================================
     # SECTION 1 — Overview
     # =====================================================
     total_created = len(created_tickets)
     total_resolved = len(closed_tickets)
-    still_open = len(open_tickets)
     resolution_rate = (total_resolved / total_created * 100) if total_created > 0 else 0
 
     # Average FRT for tickets created in window that have a response
@@ -83,7 +84,6 @@ def generate_daily_report(target_date=None):
         "",
         f"📥 Tickets Created:   {total_created}",
         f"✅ Tickets Resolved:   {total_resolved}",
-        f"⏳ Still Open:          {still_open}",
         f"📈 Resolution Rate:    {resolution_rate:.1f}%",
         f"⏱️ Avg Response Time:  {esc(config.fmt_mins(avg_frt))}",
         "",
@@ -304,39 +304,11 @@ def generate_daily_report(target_date=None):
             )
     lines.append("")
 
-    # =====================================================
-    # SECTION 6 — Open Tickets Requiring Attention
-    # =====================================================
-    if open_tickets:
-        lines.append("<b>⏳ Open Tickets (Needs Action)</b>")
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-        now_utc = datetime.now(tz=timezone.utc)
-        for t in open_tickets[:10]:  # Show max 10
-            if not t['created_at']:
-                continue
-            created = datetime.fromisoformat(t['created_at'])
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            open_mins = (now_utc - created).total_seconds() / 60
-
-            if t['first_responded_at'] is None and open_mins > config.SLA_FRT_THRESHOLD_MINS:
-                icon = "🔴"
-                status = "No response"
-            elif t['first_responded_at'] is None:
-                icon = "🟡"
-                status = "No response yet (within SLA)"
-            else:
-                icon = "🟡"
-                status = "Responded, awaiting resolution"
-
-            on_duty = t.get('on_duty_agent_name') or 'N/A'
-            lines.append(
-                f"{icon} <code>{esc(t['ticket_id'])}</code> — "
-                f"Open {esc(config.fmt_mins(open_mins))} — "
-                f"{esc(status)} — On-duty: {esc(on_duty)}"
-            )
-        lines.append("")
+    # Open tickets are deliberately NOT reported here (user rule 2026-07-25).
+    # The open backlog is all-time, not scoped to this 24h window, so it kept
+    # re-posting the same aging tickets every day. It stays visible on the
+    # dashboard ("⏳ Open Tickets — Needs Action"), which is the live view for
+    # it; the daily Telegram post covers the window only.
 
     lines.append("<i>KyberSwap Support Analytics</i>")
     return "\n".join(lines)

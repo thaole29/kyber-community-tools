@@ -45,7 +45,6 @@ def generate_weekly_report(end_date=None):
     this_week = database.get_tickets_in_range(start_utc, end_utc)
     prev_week = database.get_tickets_in_range(prev_start, prev_end)
     closed_this_week = database.get_tickets_closed_in_range(start_utc, end_utc)
-    open_tickets = database.get_open_tickets()
 
     local_start = start_utc.astimezone(config.LOCAL_TZ)
     local_end = end_utc.astimezone(config.LOCAL_TZ)
@@ -64,7 +63,6 @@ def generate_weekly_report(end_date=None):
     # =====================================================
     total_created = len(this_week)
     total_resolved = len(closed_this_week)
-    still_open = len(open_tickets)
     prev_created = len(prev_week)
 
     vol_change = ""
@@ -76,7 +74,9 @@ def generate_weekly_report(end_date=None):
     lines.append("<b>📥 Volume</b>")
     lines.append(f"  Created:  {total_created}{vol_change}")
     lines.append(f"  Resolved: {total_resolved}")
-    lines.append(f"  Open:     {still_open}")
+    # No "Open:" line — the backlog is all-time, not scoped to this window,
+    # so it belongs on the dashboard rather than in the post (same rule as
+    # daily_report, user 2026-07-25).
     lines.append("")
 
     # Daily breakdown
