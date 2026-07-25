@@ -12,11 +12,13 @@ const SENTIMENT_COLORS = {
   neutral: "#94a3b8",
 };
 
-// Temporarily hide all "missed" surfacing on the dashboard: the underlying
-// miss attribution has known-bad data (e.g. an on-duty agent who DID reply
-// later is still charged a miss). Flip back to true once the metrics rule is
-// fixed. Guards the Missed stat tile, the 🚫 Missed detail line, and the
-// "tickets missed" action item.
+// Hide all "missed" surfacing on the dashboard. Since the 2026-07-25
+// same-shift-cover rule, a ticket answered before the on-duty agent's shift
+// ends is no longer a miss at all — it shows up as "Covered by <agent>" with
+// the real wait time still on the on-duty agent's clock. Only waits that
+// spilled past a shift boundary can still produce a 'missed' segment, and
+// that attribution is not yet trusted enough to display. Guards the Missed
+// stat tile, the 🚫 Missed detail line, and the "tickets missed" action item.
 const SHOW_MISSED = false;
 
 // ============================================================
@@ -270,6 +272,19 @@ function AgentCard({ agent, actions }) {
     : agent.slaCompliance >= 95 ? "#22c55e" : agent.slaCompliance >= 80 ? "#f59e0b" : "#ef4444";
   const agentActions = actions?.items || [];
   const breaches = agent.breaches || [];
+  // "Covered" = someone else answered inside this agent's own shift; the wait
+  // still counts as theirs (Avg FRT / SLA), we just show who handled it.
+  // "Covering" is the mirror: tickets they picked up on another agent's shift.
+  const statTiles = [
+    { label: "On-Shift", value: agent.onShift, color: "#6366f1" },
+    { label: "Responded", value: agent.responded, color: "#22c55e" },
+    ...(SHOW_MISSED
+      ? [{ label: "Missed", value: agent.missed, color: agent.missed > 0 ? "#ef4444" : "#22c55e" }]
+      : []),
+    { label: "Cross-Help", value: agent.crossHelp, color: "#06b6d4" },
+    ...(agent.covered > 0 ? [{ label: "Covered", value: agent.covered, color: "#a855f7" }] : []),
+    ...(agent.covering > 0 ? [{ label: "Covering", value: agent.covering, color: "#06b6d4" }] : []),
+  ];
   return (
     <Card style={{ marginBottom: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
@@ -290,15 +305,8 @@ function AgentCard({ agent, actions }) {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: `repeat(${SHOW_MISSED ? 4 : 3}, 1fr)`, gap: 8, marginBottom: 14 }}>
-        {[
-          { label: "On-Shift", value: agent.onShift, color: "#6366f1" },
-          { label: "Responded", value: agent.responded, color: "#22c55e" },
-          ...(SHOW_MISSED
-            ? [{ label: "Missed", value: agent.missed, color: agent.missed > 0 ? "#ef4444" : "#22c55e" }]
-            : []),
-          { label: "Cross-Help", value: agent.crossHelp, color: "#06b6d4" },
-        ].map((s, i) => (
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${statTiles.length}, 1fr)`, gap: 8, marginBottom: 14 }}>
+        {statTiles.map((s, i) => (
           <div key={i} style={{ textAlign: "center", padding: "8px 4px", background: "rgba(255,255,255,0.03)", borderRadius: 8 }}>
             <div style={{ fontSize: 18, fontWeight: 700, color: s.color }}>{s.value}</div>
             <div style={{ fontSize: 9, color: "#64748b", marginTop: 2 }}>{s.label}</div>
@@ -309,7 +317,7 @@ function AgentCard({ agent, actions }) {
       <div style={{ display: "flex", gap: 16, marginBottom: 8, fontSize: 12, color: "#94a3b8", flexWrap: "wrap" }}>
         <span>Avg FRT: <strong style={{ color: "#e2e8f0" }}>{agent.avgFRT}m</strong></span>
         <span>Median: <strong style={{ color: "#e2e8f0" }}>{agent.medianFRT}m</strong></span>
-        <span title="Mean across responded + cross-help + missed contributions (FRT-split applied to every event)">
+        <span title="Mean across responded + cross-help + covered + missed contributions (FRT-split applied to every event; 0-minute coverage labels excluded)">
           Avg Resp (incl FU): <strong style={{ color: "#e2e8f0" }}>{agent.avgResponseAll}m</strong>
           {agent.responseCount > 0 && (
             <span style={{ color: "#64748b" }}> ({agent.responseCount} evt{agent.followupCount > 0 ? `, ${agent.followupCount} FU` : ""})</span>
@@ -334,6 +342,55 @@ function AgentCard({ agent, actions }) {
               <strong style={{ color: "#06b6d4", marginLeft: 4 }}>{formatMins(agent.totalCrossHelpMins)}</strong>
             </span>
           )}
+        </div>
+      )}
+
+      {agent.covered > 0 && (
+        <div
+          style={{
+            display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+            marginBottom: 12, padding: "8px 12px",
+            background: "rgba(168,85,247,0.08)",
+            border: "1px solid rgba(168,85,247,0.25)",
+            borderRadius: 8, fontSize: 12, color: "#cbd5e1",
+          }}
+          title="Tickets answered by another agent during this agent's own shift. The ticket was handled — no miss — but the wait time still counts toward this agent's FRT and SLA."
+        >
+          <span>🤝 Covered by:</span>
+          {(agent.coveredBy || []).map((b, i) => (
+            <span key={i} style={{ color: "#e2e8f0" }}>
+              <strong style={{ color: "#a855f7" }}>{b.agent}</strong>
+              <span style={{ color: "#64748b" }}> × {b.count}</span>
+            </span>
+          ))}
+          <span style={{ color: "#64748b", marginLeft: "auto" }}>
+            {agent.covered} ticket{agent.covered === 1 ? "" : "s"}
+            {agent.coveredMins > 0 ? ` · ${formatMins(agent.coveredMins)} still on their clock` : ""}
+          </span>
+        </div>
+      )}
+
+      {agent.covering > 0 && (
+        <div
+          style={{
+            display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+            marginBottom: 12, padding: "8px 12px",
+            background: "rgba(6,182,212,0.08)",
+            border: "1px solid rgba(6,182,212,0.25)",
+            borderRadius: 8, fontSize: 12, color: "#cbd5e1",
+          }}
+          title="Tickets this agent answered inside another agent's shift. Recorded as coverage only — the wait minutes are charged to the on-duty agent, not to them."
+        >
+          <span>🙌 Covering for:</span>
+          {(agent.coveringFor || []).map((b, i) => (
+            <span key={i} style={{ color: "#e2e8f0" }}>
+              <strong style={{ color: "#06b6d4" }}>{b.agent}</strong>
+              <span style={{ color: "#64748b" }}> × {b.count}</span>
+            </span>
+          ))}
+          <span style={{ color: "#64748b", marginLeft: "auto" }}>
+            {agent.covering} ticket{agent.covering === 1 ? "" : "s"}
+          </span>
         </div>
       )}
 

@@ -13,6 +13,14 @@ The "FRT split" rule (per user request 2026-05-18):
   - The missing agent(s) are blamed for `shift_end - last_user_msg` (or
     `shift_end - shift_start` for fully-missed middle shifts).
 
+Same-shift cover (per user request 2026-07-25) narrows that rule: if the
+ticket was answered BEFORE the on-duty agent's shift ended — no matter who
+answered it — the ticket counts as handled. The on-duty agent carries the
+REAL wait (`first_response - created`) rather than a miss charged to their
+shift end, and the actual responder shows up only as a "covered by" label
+(0 minutes, no FRT credit of their own). The cross-boundary split above is
+unchanged.
+
 This module reads `tickets` rows and returns per-agent rollups that
 faithfully reflect that split, instead of attributing the whole ticket's
 FRT to the single responding agent.
@@ -137,6 +145,18 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None, responded_agents_by_ti
                 'buddy_covered': 0,
                 'buddy_covered_by': {},  # {buddy_name: count}
                 'buddy_covered_tickets': [],  # list of ticket ids
+                # Same-shift cover (2026-07-25): someone else answered during
+                # this agent's own shift. Not a miss — the agent still owns
+                # the real wait minutes, we just record who handled it.
+                'covered': 0,
+                'covered_by': {},  # {responder_name: count}
+                'covered_tickets': [],  # list of ticket ids
+                'covered_mins': [],  # wait minutes still charged to them
+                # Mirror side: tickets this agent answered inside SOMEONE
+                # ELSE's shift. Label + count only, no minutes credited.
+                'covering': 0,
+                'covering_for': {},  # {on_duty_name: count}
+                'covering_tickets': [],  # list of ticket ids
                 # Tickets where this agent was on-duty when a PREVIOUS shift's
                 # owner answered their own ticket late, spilling into this
                 # agent's shift. Not a miss — just on their radar to follow up.
@@ -191,6 +211,20 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None, responded_agents_by_ti
                 if buddy:
                     s['buddy_covered_by'][buddy] = s['buddy_covered_by'].get(buddy, 0) + 1
                 s['buddy_covered_tickets'].append(tid)
+            elif ctype == 'covered' and c.get('agent'):
+                s = slot(c['agent'])
+                s['covered'] += 1
+                by = c.get('covered_by')
+                if by:
+                    s['covered_by'][by] = s['covered_by'].get(by, 0) + 1
+                s['covered_tickets'].append(tid)
+            elif ctype == 'covering' and c.get('agent'):
+                s = slot(c['agent'])
+                s['covering'] += 1
+                for_ = c.get('covered_for')
+                if for_:
+                    s['covering_for'][for_] = s['covering_for'].get(for_, 0) + 1
+                s['covering_tickets'].append(tid)
             elif ctype == 'followup' and c.get('agent'):
                 s = slot(c['agent'])
                 s['followup'] += 1
@@ -205,12 +239,19 @@ def aggregate_per_agent(tickets, sla_threshold_mins=None, responded_agents_by_ti
             s = slot(agent)
             mins = c['mins']
             ctype = c['type']
-            # buddy_covered / followup are markers only (mins=0); skip
-            # FRT/SLA scoring so they never count toward a miss or average.
-            if ctype in ('buddy_covered', 'followup'):
+            # buddy_covered / followup / covering are markers only (mins=0);
+            # skip FRT/SLA scoring so they never count toward a miss or
+            # average. 'covering' in particular is the responder's label for
+            # a same-shift cover: the minutes belong to the shift owner.
+            if ctype in ('buddy_covered', 'followup', 'covering'):
                 continue
-            if ctype in ('responded', 'cross_help'):
+            if ctype in ('responded', 'cross_help', 'covered'):
+                # 'covered' = someone else replied inside this agent's shift.
+                # The wait was theirs to own, so it scores like a normal FRT
+                # (and still breaches SLA when too slow).
                 s['frts'].append(mins)
+                if ctype == 'covered':
+                    s['covered_mins'].append(mins)
             elif ctype == 'missed':
                 s['missed_mins'].append(mins)
                 # Missed contributions are also counted as a "wait you owned"
@@ -255,6 +296,9 @@ def aggregate_response_events(events, responded_agents_by_ticket=None):
         'missed_mins':    list[float]  — strictly the 'missed' contributions,
         'cross_help_mins':list[float]  — strictly the 'cross_help' contributions,
         'responded_mins': list[float]  — strictly the 'responded' contributions,
+        'covered_mins':   list[float]  — waits owned by an on-duty agent whose
+                                          ticket someone else answered inside
+                                          that same shift,
       }
     """
     out = {}
@@ -289,6 +333,13 @@ def aggregate_response_events(events, responded_agents_by_ticket=None):
             ctype = c.get('type')
             if not agent or mins is None:
                 continue
+            # Zero-minute label markers ('covering' for a same-shift cover,
+            # plus the pre-existing buddy/followup markers) describe WHO was
+            # involved, not how long anyone waited — keep them out of the
+            # response-time lists so they don't pad counts or pull averages
+            # toward zero.
+            if ctype in ('covering', 'buddy_covered', 'followup'):
+                continue
             slot = out.setdefault(agent, {
                 'all_mins': [],
                 'first_mins': [],
@@ -296,6 +347,7 @@ def aggregate_response_events(events, responded_agents_by_ticket=None):
                 'missed_mins': [],
                 'cross_help_mins': [],
                 'responded_mins': [],
+                'covered_mins': [],
             })
             slot['all_mins'].append(mins)
             if et == 'first':
@@ -308,6 +360,8 @@ def aggregate_response_events(events, responded_agents_by_ticket=None):
                 slot['cross_help_mins'].append(mins)
             elif ctype == 'responded':
                 slot['responded_mins'].append(mins)
+            elif ctype == 'covered':
+                slot['covered_mins'].append(mins)
     return out
 
 
@@ -324,6 +378,8 @@ def summarize_responses(agg_for_agent):
         'count_missed':          len(agg_for_agent['missed_mins']),
         'count_cross_help':      len(agg_for_agent['cross_help_mins']),
         'count_responded':       len(agg_for_agent['responded_mins']),
+        'count_covered':         len(agg_for_agent.get('covered_mins', [])),
+        'total_covered_mins':    _sum(agg_for_agent.get('covered_mins', [])),
         'avg_response_all':      _mean(agg_for_agent['all_mins']),
         'avg_response_first':    _mean(agg_for_agent['first_mins']),
         'avg_response_followup': _mean(agg_for_agent['followup_mins']),
@@ -363,4 +419,11 @@ def summarize(agg_for_agent):
         'buddy_covered': agg_for_agent.get('buddy_covered', 0),
         'buddy_covered_by': agg_for_agent.get('buddy_covered_by', {}),
         'buddy_covered_tickets': agg_for_agent.get('buddy_covered_tickets', []),
+        'covered': agg_for_agent.get('covered', 0),
+        'covered_by': agg_for_agent.get('covered_by', {}),
+        'covered_tickets': agg_for_agent.get('covered_tickets', []),
+        'covered_mins_total': round(sum(agg_for_agent.get('covered_mins', [])), 2),
+        'covering': agg_for_agent.get('covering', 0),
+        'covering_for': agg_for_agent.get('covering_for', {}),
+        'covering_tickets': agg_for_agent.get('covering_tickets', []),
     }

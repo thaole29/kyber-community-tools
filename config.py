@@ -298,11 +298,26 @@ def compute_frt_contributions(start_dt, end_dt, responding_agent=None):
       - 'missed'     : any earlier segment whose shift agent did NOT respond
                        during their shift before it ended. Agent is "blamed"
                        for the time the user was waiting on their watch.
+      - 'covered'    : the on-duty agent's segment when SOMEONE ELSE answered
+                       INSIDE that same shift (no boundary crossed). The seat
+                       was still theirs, so they own the REAL wait
+                       (`end_dt - start_dt`) — not the punitive "rest of your
+                       shift" charge that 'missed' applies. `covered_by` names
+                       the agent who actually replied.
+      - 'covering'   : marker (mins=0) for that actual responder. The ticket
+                       WAS handled, so this is credit-by-label only: the
+                       minutes belong to the shift owner, not to them.
+                       `covered_for` names the on-duty agent they helped.
       - 'followup'   : marker (mins=0) for the agent on duty when a PREVIOUS
                        shift's owner answered their OWN ticket late, spilling
                        into this shift. They never owned the wait, so they are
                        NOT charged a miss — the ticket is just on their radar
                        to follow up. The late responder owns the whole gap.
+
+    Same-shift cover (user rule 2026-07-25):
+      Ticket opens during Shift X → another agent replies BEFORE X ends.
+      X agent gets `end_dt - start_dt` minutes (type=covered, covered_by=Y).
+      Y gets a 0-minute 'covering' marker only.
 
     Cross-shift split (the case the user described):
       Ticket waits during Shift X → X ends → Shift Y agent eventually replies.
@@ -375,6 +390,33 @@ def compute_frt_contributions(start_dt, end_dt, responding_agent=None):
                 })
                 cursor = end_dt
                 continue
+            # CASE A (same-shift cover, user rule 2026-07-25): no boundary was
+            # ever crossed (`prior_agents` is empty ⇒ cursor is still
+            # start_dt), so the reply landed inside the on-duty agent's OWN
+            # shift. The ticket was handled; nobody is "missed". The on-duty
+            # agent still owns the seat, so they carry the REAL wait
+            # (end_dt - start_dt) instead of being charged up to their shift
+            # end, and the responder is recorded as covering them.
+            if not prior_agents:
+                contributions.append({
+                    'agent': shift_agent,
+                    'shift_label': shift_label,
+                    'mins': round(cross_help_mins, 2),
+                    'type': 'covered',
+                    'covered_by': responding_agent,
+                })
+                if responding_agent:
+                    contributions.append({
+                        'agent': responding_agent,
+                        'shift_label': None,
+                        'mins': 0.0,
+                        'type': 'covering',
+                        'covered_for': shift_agent,
+                    })
+                cursor = end_dt
+                continue
+            # Boundary already crossed and a declared buddy closed it out:
+            # keep the historical full waiver (0 mins for the on-duty seat).
             if is_shift_buddy(shift_agent, responding_agent, end_dt):
                 if responding_agent:
                     contributions.append({

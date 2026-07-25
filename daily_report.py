@@ -112,19 +112,28 @@ def generate_daily_report(target_date=None):
             if t['on_duty_agent_name'] == agent
             and t['first_responded_at'] is None
         )
+        # 'covered' = handled by another agent inside this shift — not a miss,
+        # but the wait time still lands on the on-duty agent's FRT.
+        covered_txt = (
+            f"{a.get('covered', 0)} covered | " if a.get('covered', 0) else ""
+        )
         lines.append(
             f"• <b>{esc(agent)}</b>: {on_shift} on-shift | "
             f"{a.get('responded', 0)} responded | "
+            f"{covered_txt}"
             f"{a.get('missed', 0)} missed | "
             f"{no_response} no reply | "
             f"{a.get('cross_help', 0)} cross-help"
         )
 
-    # Reus (optional agent, no shift) — credited via cross_help in per_agent.
+    # Reus (optional agent, no shift) — his help always lands inside someone
+    # else's shift, so it shows up as 'covering' (same shift) or 'cross_help'
+    # (after a boundary). Count both.
     reus = per_agent.get('Reus')
-    if reus and reus.get('cross_help', 0):
+    reus_help = (reus or {}).get('cross_help', 0) + (reus or {}).get('covering', 0)
+    if reus_help:
         lines.append(
-            f"• <b>Reus</b> (optional): {reus['cross_help']} cross-help responses"
+            f"• <b>Reus</b> (optional): {reus_help} cross-help responses"
         )
     lines.append("")
 

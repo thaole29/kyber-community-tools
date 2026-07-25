@@ -429,10 +429,13 @@ def _agent_action_items(agent: dict, product_breakdown: list[dict]) -> list[dict
             'priority': 'low',
             'text': 'Perfect SLA compliance — recognize performance in standup.',
         })
-    if agent['crossHelp'] > 0:
+    # Peer help = replies given outside their own shift (cross-help, after a
+    # boundary) PLUS same-shift covers picked up on someone else's watch.
+    helped = agent['crossHelp'] + agent.get('covering', 0)
+    if helped > 0:
         items.append({
             'priority': 'low',
-            'text': f"Helped peers {agent['crossHelp']} times outside own shift.",
+            'text': f"Helped peers {helped} times outside own shift.",
         })
     return items[:4]
 
@@ -600,11 +603,14 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
             'fastest': None, 'slowest': None,
             'on_shift': 0, 'responded': 0, 'missed': 0, 'cross_help': 0,
             'buddy_covered': 0, 'buddy_covered_by': {}, 'buddy_covered_tickets': [],
+            'covered': 0, 'covered_by': {}, 'covered_tickets': [], 'covered_mins': [],
+            'covering': 0, 'covering_for': {}, 'covering_tickets': [],
         })
         summary = metrics.summarize(a)
         resp_summary = metrics.summarize_responses(per_agent_resp.get(agent_name, {
             'all_mins': [], 'first_mins': [], 'followup_mins': [],
             'missed_mins': [], 'cross_help_mins': [], 'responded_mins': [],
+            'covered_mins': [],
         }))
         fastest_pair = summary['fastest']
         slowest_pair = summary['slowest']
@@ -662,6 +668,28 @@ def build_support_payload(start_utc: datetime, end_utc: datetime,
                 )
             ],
             'buddyCoveredTickets': summary['buddy_covered_tickets'],
+            # Same-shift cover: another agent answered during this agent's own
+            # shift. The wait minutes still land on this agent's FRT/SLA; the
+            # label just says who actually handled it.
+            'covered': summary['covered'],
+            'coveredBy': [
+                {'agent': b, 'count': n}
+                for b, n in sorted(
+                    summary['covered_by'].items(), key=lambda kv: -kv[1],
+                )
+            ],
+            'coveredTickets': summary['covered_tickets'],
+            'coveredMins': summary['covered_mins_total'],
+            # Mirror side: tickets this agent picked up inside someone else's
+            # shift (count/label only — no minutes credited to them).
+            'covering': summary['covering'],
+            'coveringFor': [
+                {'agent': b, 'count': n}
+                for b, n in sorted(
+                    summary['covering_for'].items(), key=lambda kv: -kv[1],
+                )
+            ],
+            'coveringTickets': summary['covering_tickets'],
         })
 
     # Agent action items (heuristic rules)

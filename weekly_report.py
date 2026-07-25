@@ -135,7 +135,17 @@ def generate_weekly_report(end_date=None):
                 f"(no data last week) | Segments: {len(tw_frts)}"
             )
         else:
-            lines.append(f"  <b>{esc(agent)}</b>: No responses this week")
+            # An agent can have zero FRT minutes yet still have worked:
+            # same-shift covers credit the wait to the on-duty agent and
+            # leave the responder with a label-only 'covering' marker.
+            covering_n = tw_per_agent.get(agent, {}).get('covering', 0)
+            if covering_n:
+                lines.append(
+                    f"  <b>{esc(agent)}</b>: no FRT of their own — "
+                    f"covered {covering_n} ticket(s) on someone else's shift"
+                )
+            else:
+                lines.append(f"  <b>{esc(agent)}</b>: No responses this week")
     lines.append("")
 
     # =====================================================
@@ -153,13 +163,16 @@ def generate_weekly_report(end_date=None):
         a = tw_per_agent.get(agent, {})
         on_shift = a.get('on_shift', 0)
         responded_n = a.get('responded', 0)
-        missed_n = a.get('missed', 0)
-        cross_help_n = a.get('cross_help', 0)
+        # 'covered' = answered by someone else inside this shift (handled, but
+        # the wait still belongs to the on-duty agent); 'missed' only remains
+        # for waits that spilled past the shift boundary.
+        covered_n = a.get('covered', 0) + a.get('missed', 0)
+        cross_help_n = a.get('cross_help', 0) + a.get('covering', 0)
         lines.append(
             f"  Shift {esc(label)} ({esc(agent)}, "
             f"{start_h:02d}:00–{end_h:02d}:00 UTC): "
             f"{on_shift} on-shift | "
-            f"{responded_n} handled | {missed_n} covered by others | "
+            f"{responded_n} handled | {covered_n} covered by others | "
             f"{cross_help_n} cross-help out"
         )
     lines.append("")
