@@ -25,15 +25,45 @@ PROBE="${WAIT_PROBE:-3}"
 
 ts() { date '+%Y-%m-%d %H:%M:%S %z'; }
 
+# One DNS probe, bounded by a hard wall-clock watchdog.
+#
+# `dig +time +tries` replaced `host -W`, which on macOS ignores its own
+# timeout when the resolver is unreachable (incident 2026-05-16: one call
+# blocked ~17 min). But +time only bounds how long dig waits for a DNS
+# *response* — it does not bound the call itself: on 2026-07-25 a
+# `dig +time=3 +tries=1` sat in state S for 20 HOURS after a wake-from-sleep,
+# wedging this wrapper and taking bot.py down with it (ticket-2200 went
+# unrecorded). So we run dig in the background and SIGKILL it if it outlives
+# the probe budget, guaranteeing every attempt terminates.
+probe_dns() {
+    local out pid killer rc
+    out="$(mktemp -t wait_and_run)" || return 1
+    /usr/bin/dig +time="$PROBE" +tries=1 +short "$HOST" >"$out" 2>/dev/null &
+    pid=$!
+    ( sleep "$((PROBE + 2))"; kill -9 "$pid" 2>/dev/null ) &
+    killer=$!
+    wait "$pid" 2>/dev/null
+    rc=$?
+    kill "$killer" 2>/dev/null
+    wait "$killer" 2>/dev/null
+    if [ "$rc" -ne 0 ]; then
+        rm -f "$out"
+        return 1
+    fi
+    # A resolver can answer "no records" successfully — require actual output.
+    if grep -q . "$out"; then
+        rm -f "$out"
+        return 0
+    fi
+    rm -f "$out"
+    return 1
+}
+
 start=$(date +%s)
 attempt=0
 while true; do
     attempt=$((attempt + 1))
-    # Use `dig +time +tries` instead of `host -W` — on macOS, `host -W 2`
-    # does NOT honor its timeout when the resolver itself is unreachable
-    # (real incident 2026-05-16: a single host call blocked ~17 min). `dig`
-    # has a hard per-query cap via +time + +tries.
-    if /usr/bin/dig +time="$PROBE" +tries=1 +short "$HOST" 2>/dev/null | grep -q .; then
+    if probe_dns; then
         echo "[$(ts)] [wait_and_run] DNS ready for $HOST after $attempt attempt(s)"
         break
     fi
