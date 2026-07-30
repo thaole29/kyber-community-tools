@@ -28,6 +28,7 @@ import config
 import database
 import discord_backfill
 import classify_tickets
+import telegram_watch
 
 PROJECT_DIR = Path(__file__).resolve().parent
 MARKER_DIR = PROJECT_DIR / 'logs' / '.markers'
@@ -55,6 +56,12 @@ def normalize_id(name):
     return name
 
 
+# Long-poll task for the Telegram mention watcher. Held here so a Discord
+# reconnect (on_ready fires again) does not spawn a second poller — two
+# getUpdates consumers on one token silently steal each other's updates.
+_telegram_watch_task = None
+
+
 # =====================================================
 # BOT EVENTS
 # =====================================================
@@ -79,6 +86,15 @@ async def on_ready():
     if not classify_loop.is_running():
         classify_loop.start()
     print(f'Classify loop started (every 15 minutes)', flush=True)
+    # Telegram responsiveness watcher — tracks @-tags of agents in the internal
+    # staff group. Rides in this process because it is the only thing already
+    # supervised 24/7; it idles harmlessly when unconfigured.
+    if not telegram_sweep_loop.is_running():
+        telegram_sweep_loop.start()
+    global _telegram_watch_task
+    if _telegram_watch_task is None or _telegram_watch_task.done():
+        _telegram_watch_task = asyncio.create_task(telegram_watch.watch_loop())
+        print('Telegram mention watcher started (long-poll)', flush=True)
     # Aggressive one-shot scan on every (re)connect, to bridge any
     # gateway gap. Runs in background so it doesn't delay on_ready.
     asyncio.create_task(_initial_catchup())
@@ -529,6 +545,25 @@ async def classify_loop():
 
 @classify_loop.before_loop
 async def before_classify():
+    await client.wait_until_ready()
+
+
+@tasks.loop(minutes=5)
+async def telegram_sweep_loop():
+    """Mark on-shift Telegram tags as slow once they pass the threshold.
+
+    The watcher only stamps a verdict when the agent finally responds, so a tag
+    that is never answered would otherwise never appear in a report. This makes
+    'still waiting past 20 min' visible without a reply.
+    """
+    try:
+        await telegram_watch.sweep_overdue()
+    except Exception as e:
+        print(f'[TG-WATCH] sweep error: {e}', flush=True)
+
+
+@telegram_sweep_loop.before_loop
+async def before_telegram_sweep():
     await client.wait_until_ready()
 
 

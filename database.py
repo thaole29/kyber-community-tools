@@ -9,7 +9,7 @@ used by bot.py, reports, and backfill scripts.
 import sqlite3
 import os
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import config
 
 
@@ -162,6 +162,89 @@ def init_db():
             report_date TEXT NOT NULL UNIQUE,
             report_json TEXT NOT NULL,
             created_at  TEXT NOT NULL
+        )
+    """)
+
+    # Telegram responsiveness: every time an agent is @-tagged in the internal
+    # staff group, one row. `responded_at` is stamped by the first thing that
+    # agent does in the chat afterwards — any message, or a reaction on the
+    # tagging message. Tags that land outside the agent's own shift are kept
+    # (on_shift=0) but never counted as slow: they were off duty.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS telegram_mentions (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id        TEXT NOT NULL,
+            message_id     INTEGER NOT NULL,
+            agent_name     TEXT NOT NULL,
+            mentioned_by   TEXT,
+            mentioned_at   TEXT NOT NULL,
+            mention_text   TEXT,
+            shift_label    TEXT,
+            on_shift       BOOLEAN DEFAULT 0,
+            responded_at   TEXT,
+            response_mins  REAL,
+            response_kind  TEXT,
+            slow           BOOLEAN DEFAULT 0,
+            created_at     TEXT NOT NULL,
+            UNIQUE (chat_id, message_id, agent_name)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tg_mentions_at "
+        "ON telegram_mentions(mentioned_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tg_mentions_open "
+        "ON telegram_mentions(agent_name, responded_at)"
+    )
+    # Provenance: 'watcher' (telegram_watch.py) or 'manual' (telegram_manual.py
+    # CLI). Rows are otherwise identical, so reports treat both the same.
+    tg_cols = {row['name'] for row in conn.execute("PRAGMA table_info(telegram_mentions)")}
+    if 'source' not in tg_cols:
+        conn.execute("ALTER TABLE telegram_mentions ADD COLUMN source TEXT DEFAULT 'watcher'")
+
+    # Telegram id ↔ agent, learned the first time an agent posts under a
+    # username we recognise. Lets tracking survive a later username change.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS telegram_identities (
+            telegram_id  TEXT PRIMARY KEY,
+            agent_name   TEXT NOT NULL,
+            username     TEXT,
+            display_name TEXT,
+            first_seen   TEXT NOT NULL,
+            last_seen    TEXT NOT NULL
+        )
+    """)
+
+    # Manual compliance strikes logged with /record in the staff group. One row
+    # per reminder — a discrete "this agent did not meet response time" event,
+    # not a measured wait, which is why it does not live in telegram_mentions.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_reminders (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_name   TEXT NOT NULL,
+            note         TEXT,
+            recorded_by  TEXT,
+            recorded_at  TEXT NOT NULL,
+            shift_label  TEXT,
+            on_shift     BOOLEAN DEFAULT 0,
+            chat_id      TEXT,
+            message_id   INTEGER,
+            source       TEXT DEFAULT 'command',
+            created_at   TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reminders_at "
+        "ON agent_reminders(recorded_at)"
+    )
+
+    # Long-poll cursor for telegram_watch.py (key='update_offset'), so a
+    # restart neither replays nor skips updates.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS telegram_watch_state (
+            key   TEXT PRIMARY KEY,
+            value TEXT
         )
     """)
 
@@ -941,5 +1024,228 @@ def save_conversation_excerpt(ticket_id, excerpt):
                    OR length(conversation_excerpt) < length(?))
         """, (excerpt, ticket_id, excerpt))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# =====================================================
+# TELEGRAM RESPONSIVENESS
+# =====================================================
+
+def get_watch_offset():
+    """Last processed getUpdates offset, or None on a fresh install."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value FROM telegram_watch_state WHERE key = 'update_offset'"
+        ).fetchone()
+        return int(row['value']) if row and row['value'] else None
+    finally:
+        conn.close()
+
+
+def set_watch_offset(offset):
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO telegram_watch_state (key, value) VALUES ('update_offset', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(offset),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def remember_telegram_identity(telegram_id, agent_name, username=None, display_name=None):
+    """Cache the Telegram id of a known agent so tracking survives a username
+    change. Updates last_seen (and username/display name) on every sighting."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute("""
+            INSERT INTO telegram_identities
+                (telegram_id, agent_name, username, display_name, first_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(telegram_id) DO UPDATE SET
+                agent_name   = excluded.agent_name,
+                username     = COALESCE(excluded.username, telegram_identities.username),
+                display_name = COALESCE(excluded.display_name, telegram_identities.display_name),
+                last_seen    = excluded.last_seen
+        """, (str(telegram_id), agent_name, username, display_name, now, now))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_telegram_identities():
+    """{telegram_id: agent_name} learned so far."""
+    conn = get_connection()
+    try:
+        return {r['telegram_id']: r['agent_name']
+                for r in conn.execute("SELECT telegram_id, agent_name FROM telegram_identities")}
+    finally:
+        conn.close()
+
+
+def record_telegram_mention(chat_id, message_id, agent_name, mentioned_by,
+                            mentioned_at, mention_text, shift_label, on_shift,
+                            source='watcher'):
+    """Log one @-tag of an agent. Idempotent per (chat, message, agent) so a
+    replayed update never double-counts."""
+    conn = get_connection()
+    try:
+        conn.execute("""
+            INSERT OR IGNORE INTO telegram_mentions
+                (chat_id, message_id, agent_name, mentioned_by, mentioned_at,
+                 mention_text, shift_label, on_shift, source, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            str(chat_id), int(message_id), agent_name, mentioned_by,
+            mentioned_at, (mention_text or '')[:500], shift_label,
+            1 if on_shift else 0, source,
+            datetime.now(timezone.utc).isoformat(),
+        ))
+        conn.commit()
+        return conn.total_changes > 0
+    finally:
+        conn.close()
+
+
+def resolve_telegram_mentions(chat_id, agent_name, responded_at, kind,
+                              message_id=None, sla_mins=None):
+    """Close this agent's still-open tags in a chat.
+
+    Any message they post clears every pending tag; a reaction clears only the
+    tag it was placed on (pass message_id). Returns the rows it closed.
+    """
+    sla = sla_mins if sla_mins is not None else config.TELEGRAM_MENTION_SLA_MINS
+    conn = get_connection()
+    try:
+        sql = ("SELECT id, mentioned_at, on_shift FROM telegram_mentions "
+               "WHERE chat_id = ? AND agent_name = ? AND responded_at IS NULL "
+               "AND mentioned_at <= ?")
+        params = [str(chat_id), agent_name, responded_at]
+        if message_id is not None:
+            sql += " AND message_id = ?"
+            params.append(int(message_id))
+        rows = [dict(r) for r in conn.execute(sql, params)]
+        end = datetime.fromisoformat(responded_at)
+        closed = []
+        for r in rows:
+            start = datetime.fromisoformat(r['mentioned_at'])
+            mins = round((end - start).total_seconds() / 60.0, 2)
+            # Off-shift tags are recorded but never judged: the agent was not
+            # on duty, so a long gap is not a miss.
+            slow = 1 if (r['on_shift'] and mins > sla) else 0
+            conn.execute(
+                "UPDATE telegram_mentions SET responded_at = ?, response_mins = ?, "
+                "response_kind = ?, slow = ? WHERE id = ?",
+                (responded_at, mins, kind, slow, r['id']),
+            )
+            closed.append({**r, 'response_mins': mins, 'slow': slow})
+        conn.commit()
+        return closed
+    finally:
+        conn.close()
+
+
+def flag_overdue_telegram_mentions(now_iso=None, sla_mins=None):
+    """Stamp slow=1 on on-shift tags already past the threshold but still
+    unanswered, so reports see them without waiting for a reply."""
+    sla = sla_mins if sla_mins is not None else config.TELEGRAM_MENTION_SLA_MINS
+    now = now_iso or datetime.now(timezone.utc).isoformat()
+    cutoff = (datetime.fromisoformat(now) - timedelta(minutes=sla)).isoformat()
+    conn = get_connection()
+    try:
+        cur = conn.execute("""
+            UPDATE telegram_mentions SET slow = 1
+            WHERE responded_at IS NULL AND on_shift = 1 AND slow = 0
+              AND mentioned_at <= ?
+        """, (cutoff,))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def get_telegram_mentions_in_range(start_utc, end_utc):
+    """Tags whose mentioned_at falls in [start, end). Datetimes or ISO strings."""
+    s = start_utc.isoformat() if hasattr(start_utc, 'isoformat') else start_utc
+    e = end_utc.isoformat() if hasattr(end_utc, 'isoformat') else end_utc
+    conn = get_connection()
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM telegram_mentions WHERE mentioned_at >= ? AND mentioned_at < ? "
+            "ORDER BY mentioned_at", (s, e))]
+    finally:
+        conn.close()
+
+
+def record_agent_reminder(agent_name, note, recorded_by, recorded_at,
+                          shift_label, on_shift, chat_id=None, message_id=None,
+                          source='command'):
+    """Log one compliance reminder ('/record <agent>'). Returns the new row id."""
+    conn = get_connection()
+    try:
+        cur = conn.execute("""
+            INSERT INTO agent_reminders
+                (agent_name, note, recorded_by, recorded_at, shift_label,
+                 on_shift, chat_id, message_id, source, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            agent_name, (note or '').strip()[:500] or None, recorded_by,
+            recorded_at, shift_label, 1 if on_shift else 0,
+            str(chat_id) if chat_id is not None else None, message_id, source,
+            datetime.now(timezone.utc).isoformat(),
+        ))
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_agent_reminders_in_range(start_utc, end_utc, agent_name=None):
+    """Reminders whose recorded_at falls in [start, end)."""
+    s = start_utc.isoformat() if hasattr(start_utc, 'isoformat') else start_utc
+    e = end_utc.isoformat() if hasattr(end_utc, 'isoformat') else end_utc
+    sql = ("SELECT * FROM agent_reminders WHERE recorded_at >= ? AND recorded_at < ?")
+    params = [s, e]
+    if agent_name:
+        sql += " AND agent_name = ?"
+        params.append(agent_name)
+    conn = get_connection()
+    try:
+        return [dict(r) for r in conn.execute(sql + " ORDER BY recorded_at", params)]
+    finally:
+        conn.close()
+
+
+def delete_agent_reminder(reminder_id, recorded_by=None):
+    """Delete a reminder. When `recorded_by` is given, only that person's own
+    row is removed — /undo must not let someone erase another's record."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM agent_reminders WHERE id = ?",
+                           (reminder_id,)).fetchone()
+        if not row:
+            return None
+        if recorded_by is not None and row['recorded_by'] != recorded_by:
+            return False
+        conn.execute("DELETE FROM agent_reminders WHERE id = ?", (reminder_id,))
+        conn.commit()
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def get_last_agent_reminder(recorded_by):
+    """Most recent reminder logged by this person — backs /undo."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM agent_reminders WHERE recorded_by = ? "
+            "ORDER BY id DESC LIMIT 1", (recorded_by,)).fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()

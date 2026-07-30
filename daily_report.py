@@ -304,6 +304,69 @@ def generate_daily_report(target_date=None):
             )
     lines.append("")
 
+    # =====================================================
+    # SECTION 6 — Telegram responsiveness (internal group)
+    # =====================================================
+    # Covers the stretches where there are no tickets at all: an agent tagged
+    # in the staff group during their own shift is expected to react or say
+    # something within TELEGRAM_MENTION_SLA_MINS. Off-shift tags are logged but
+    # never judged, so this section is silent when nobody was tagged on duty.
+    # Flag overdue-but-unanswered tags here too: bot.py owns the 5-minute sweep
+    # loop, but the report must be correct even if the bot is down.
+    database.flag_overdue_telegram_mentions()
+    mentions = [m for m in database.get_telegram_mentions_in_range(start_utc, end_utc)
+                if m['on_shift']]
+    # Reminders logged by hand with /record in the staff group. Unlike a
+    # measured tag these are shown regardless of shift — whoever typed the
+    # command already decided it was worth recording.
+    reminders = database.get_agent_reminders_in_range(start_utc, end_utc)
+    if reminders:
+        lines.append("<b>📝 Response-Time Reminders</b> (/record)")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        per_r = {}
+        for r in reminders:
+            per_r.setdefault(r['agent_name'], []).append(r)
+        for agent in sorted(per_r, key=lambda k: -len(per_r[k])):
+            rows = per_r[agent]
+            lines.append(f"• <b>{esc(agent)}</b>: {len(rows)}")
+            for r in rows[:3]:
+                when = datetime.fromisoformat(r['recorded_at']).astimezone(config.LOCAL_TZ)
+                note = f" — {esc(r['note'])}" if r['note'] else ""
+                lines.append(f"   {esc(when.strftime('%H:%M'))} "
+                             f"by {esc(r['recorded_by'] or '?')}{note}")
+        lines.append("")
+    if mentions:
+        lines.append("<b>💬 Telegram Responsiveness</b> "
+                     f"(target: ≤ {config.TELEGRAM_MENTION_SLA_MINS} min)")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        per_agent = {}
+        for m in mentions:
+            per_agent.setdefault(m['agent_name'], []).append(m)
+        for agent in sorted(per_agent):
+            rows = per_agent[agent]
+            answered = [r for r in rows if r['response_mins'] is not None]
+            slow = [r for r in rows if r['slow']]
+            pending = [r for r in rows if r['responded_at'] is None]
+            avg = (sum(r['response_mins'] for r in answered) / len(answered)
+                   if answered else None)
+            bits = [f"{len(rows)} tag(s)"]
+            if avg is not None:
+                bits.append(f"avg {esc(config.fmt_mins(avg))}")
+            if slow:
+                bits.append(f"⚠️ {len(slow)} slow")
+            if pending:
+                bits.append(f"{len(pending)} no reply yet")
+            lines.append(f"• <b>{esc(agent)}</b>: " + " | ".join(bits))
+        slow_all = [m for m in mentions if m['slow']]
+        for m in slow_all[:5]:
+            when = datetime.fromisoformat(m['mentioned_at']).astimezone(config.LOCAL_TZ)
+            took = (config.fmt_mins(m['response_mins'])
+                    if m['response_mins'] is not None else 'no reply yet')
+            lines.append(f"   ⚠️ {esc(m['agent_name'])} — tagged "
+                         f"{esc(when.strftime('%H:%M'))} by {esc(m['mentioned_by'] or '?')} "
+                         f"→ {esc(took)}")
+        lines.append("")
+
     # Open tickets are deliberately NOT reported here (user rule 2026-07-25).
     # The open backlog is all-time, not scoped to this 24h window, so it kept
     # re-posting the same aging tickets every day. It stays visible on the

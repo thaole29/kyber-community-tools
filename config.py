@@ -142,6 +142,51 @@ SHIFTS = [
 ]
 
 # =====================================================
+# TELEGRAM RESPONSIVENESS (internal staff group)
+# =====================================================
+# Telegram @username (lowercase, no '@') → Canonical Agent Name.
+# Used by telegram_watch.py to know who was tagged in the internal group and
+# who answered. FILL THIS IN — tracking is a no-op while it is empty.
+AGENT_TELEGRAM_USERNAMES = {
+    # 'dablendo_tg':     'Dablendo',
+    # 'mikaelson_tg':    'Mikaelson',
+    # 'terrormichael_tg':'TerrorMichael',
+    # 'reus_tg':         'Reus',
+}
+
+# Telegram numeric user id → Canonical Agent Name.
+# Usernames are mutable and a `text_mention` entity carries only an id, so the
+# watcher LEARNS ids from the username map the first time it sees each agent
+# post, and caches them in the telegram_identities table. Anything set here is
+# treated as authoritative and survives a username change.
+AGENT_TELEGRAM_IDS = {
+    # '123456789': 'Dablendo',
+}
+
+# Which chat the watcher listens to. Defaults to the primary staff group.
+# Accepts the same `id` or `id/threadId` form as TELEGRAM_CHAT_ID; only the
+# chat part is used for matching (a tag counts wherever it lands in the group).
+TELEGRAM_INTERNAL_CHAT_ID = (
+    os.getenv('TELEGRAM_INTERNAL_CHAT_ID') or TELEGRAM_CHAT_ID or ''
+).split('/')[0].strip()
+
+# An agent tagged in the internal group is expected to react or say something
+# within this many minutes. Only enforced when the tag lands inside their own
+# shift — off-shift tags are still recorded, just never counted as slow.
+TELEGRAM_MENTION_SLA_MINS = int(os.getenv('TELEGRAM_MENTION_SLA_MINS', '20'))
+
+
+def get_agent_by_telegram(user_id=None, username=None):
+    """Canonical agent name for a Telegram user, by id first then @username."""
+    if user_id is not None:
+        hit = AGENT_TELEGRAM_IDS.get(str(user_id))
+        if hit:
+            return hit
+    if username:
+        return AGENT_TELEGRAM_USERNAMES.get(str(username).lstrip('@').lower())
+    return None
+
+# =====================================================
 # SHIFT BUDDIES (time-windowed overlap pairs)
 # =====================================================
 # Declares pairs of agents that share the seat for a specific UTC hour
