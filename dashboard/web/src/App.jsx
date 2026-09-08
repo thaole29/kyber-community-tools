@@ -694,11 +694,26 @@ function SupportHealthTab({ data }) {
       {/* Stats Row */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
         {[
-          { label: "Total Tickets", value: data.totalTickets, color: "#6366f1" },
+          {
+            label: "Total Tickets", value: data.totalTickets, color: "#6366f1",
+            // Campaign reward claims count as work but are not scored on
+            // response time — say so here so the volume tile and the SLA
+            // denominator below can differ without looking like a bug.
+            sub: data.noSlaTickets
+              ? `incl. ${data.noSlaTickets} no-SLA campaign claim${data.noSlaTickets > 1 ? "s" : ""}`
+              : null,
+          },
           { label: "Resolved", value: data.resolved, color: "#22c55e" },
           { label: "Still Open", value: data.open, color: "#f59e0b" },
-          { label: "Avg FRT", value: `${data.avgFRT}m`, color: "#06b6d4" },
-          { label: "SLA Compliance", value: `${data.slaCompliance}%`, color: data.slaCompliance >= 90 ? "#22c55e" : "#f59e0b" },
+          {
+            label: "Avg FRT", value: `${data.avgFRT}m`, color: "#06b6d4",
+            sub: data.noSlaTickets ? "campaign claims excluded" : null,
+          },
+          {
+            label: "SLA Compliance", value: `${data.slaCompliance}%`,
+            color: data.slaCompliance >= 90 ? "#22c55e" : "#f59e0b",
+            sub: data.noSlaTickets ? "campaign claims excluded" : null,
+          },
         ].map((s, i) => (
           <div key={i} style={{
             flex: "1 1 120px", padding: "16px 18px",
@@ -795,10 +810,26 @@ function SupportHealthTab({ data }) {
                   const sevColor = { high: "#ef4444", medium: "#f59e0b", low: "#22c55e" }[t.severity];
                   return (
                     <tr key={i} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                      <td style={{ padding: "10px 12px", color: "#e2e8f0", fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>{t.id}</td>
-                      <td style={{ padding: "10px 12px", color: "#e2e8f0" }}>{t.age}</td>
+                      <td style={{ padding: "10px 12px", color: "#e2e8f0", fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>
+                        {t.id}
+                        {t.noSla && (
+                          <span
+                            title="Campaign reward claim — the user posted a wallet address to be paid out. No response-time expectation, so it is not scored on FRT or SLA."
+                            style={{
+                              marginLeft: 8, padding: "2px 6px", borderRadius: 5,
+                              fontSize: 10, fontWeight: 600, letterSpacing: "0.03em",
+                              fontFamily: "system-ui, sans-serif",
+                              color: "#94a3b8", background: "rgba(148,163,184,0.12)",
+                              border: "1px solid rgba(148,163,184,0.2)",
+                            }}
+                          >
+                            no-SLA
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ padding: "10px 12px", color: t.noSla ? "#64748b" : "#e2e8f0" }}>{t.age}</td>
                       <td style={{ padding: "10px 12px", color: "#94a3b8" }}>{t.product}</td>
-                      <td style={{ padding: "10px 12px", color: t.status === "No response" ? "#ef4444" : "#f59e0b" }}>{t.status}</td>
+                      <td style={{ padding: "10px 12px", color: t.noSla ? "#64748b" : t.status === "No response" ? "#ef4444" : "#f59e0b" }}>{t.status}</td>
                       <td style={{ padding: "10px 12px", color: "#94a3b8" }}>{t.onDuty}</td>
                       <td style={{ padding: "10px 12px" }}>
                         <div style={{ width: 8, height: 8, borderRadius: "50%", background: sevColor }} />
