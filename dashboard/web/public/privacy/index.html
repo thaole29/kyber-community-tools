@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KS Support Analytics Privacy</title>
+<style>
+  :root { --bg:#fff; --fg:#1d1d1f; --muted:#6e6e73; --rule:#e5e5ea; --todo:#b25000; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg:#141416; --fg:#ececf0; --muted:#9a9aa2; --rule:#2c2c31; --todo:#ff9f43; }
+  }
+  :root[data-theme="dark"] { --bg:#141416; --fg:#ececf0; --muted:#9a9aa2; --rule:#2c2c31; --todo:#ff9f43; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width:720px; margin:0 auto; padding:40px 16px 64px; }
+  h1 { font-size:1.8rem; margin:0 0 4px; }
+  h2 { font-size:1.1rem; margin:32px 0 8px; padding-top:16px; border-top:1px solid var(--rule); }
+  .meta { color:var(--muted); margin:0 0 24px; }
+  .todo { color:var(--todo); font-weight:600; }
+  ul { padding-left:20px; }
+</style>
+</head>
+<body>
+<main>
+<h1>KS Support Analytics bot — Privacy Policy</h1>
+<p class="meta">Last updated: 24 October 2026</p>
+
+<h2>1. Who runs this bot</h2>
+<p>The KS Support Analytics bot is run by the community team of the "Kyber Network Official" Discord
+server, led by the community moderator.
+It is a community tool, not a commercial product: it is installed only in this one server, is not offered
+publicly and cannot be added to other servers.</p>
+<p>The bot runs on the moderator's personal computer and uses an internal AI gateway (details in section 4). Only the community team uses the data it collects.</p>
+<p>The bot exists for one reason: to help us serve and support our community better. It shows us how quickly and how well members get help, so we can fix slow spots, cover busy hours and answer common questions before they become tickets.</p>
+<p>Contact: open a support ticket in the server. This is the only contact channel for privacy questions and requests.</p>
+
+<h2>2. What we collect</h2>
+<ul>
+  <li>Discord user IDs of ticket owners, ticket closers and support staff.</li>
+  <li>Ticket channel names and timestamps (created, first response, closed, deleted).</li>
+  <li>In support ticket channels only: the user's first message (up to 200 characters) and a short
+      excerpt of the user's messages (up to 2,000 characters).</li>
+  <li>In a small list of public community channels: the last 24 hours of messages, read only to produce
+      an anonymised daily summary. Raw community messages are not stored.</li>
+  <li>Counts of support staff messages per community channel.</li>
+</ul>
+<p>We do not collect presence, direct messages, IP addresses, email addresses or wallet data, and we do
+not request the Server Members intent.</p>
+
+<h2>3. Why we use it</h2>
+<p>To serve and support our community better. Concretely, we measure response time and quality
+(first response time, SLA breaches, who handled and closed a ticket), assign each ticket one product
+category, and produce internal reports for the support team. We do not use the data for advertising,
+profiling of members, or sale, and we do not use it to train machine-learning or AI models.</p>
+<p>We process this data on the basis of our legitimate interest in providing good support to members of
+our Discord community.</p>
+
+<h2>4. Who we share it with</h2>
+<ul>
+  <li>Amazon Web Services (Amazon Bedrock), reached through an internal AI gateway —
+      receives ticket text to return a category label, and community messages (with usernames replaced by
+      anonymous IDs such as user_1) to return a summary. Bedrock does not use inputs or outputs to train
+      models.</li>
+  <li>Telegram — internal reports and alerts for the support team. An alert for a ticket waiting over
+      15 minutes can include the user's first ticket message.</li>
+  <li>Hosting: the moderator's personal computer, with FileVault full-disk encryption.</li>
+</ul>
+<p>These providers may process data outside your country. We only use providers bound by written
+data-processing terms. Public dashboards contain aggregated numbers and ticket numbers only, never message
+text or user IDs.</p>
+
+<h2>5. How long we keep it</h2>
+<ul>
+  <li>Message text (first message, excerpts, and any notes that quote it): 30 days, then deleted
+      automatically every night, including from our internal search index.</li>
+  <li>Ticket timings, categories and Discord IDs: up to 24 months for trend reporting, then deleted.</li>
+  <li>Community summaries: anonymised, with no usernames.</li>
+</ul>
+
+<h2>6. Security</h2>
+<p>Data is encrypted at rest. Access is limited to the community moderator who runs the bot. Bot tokens and
+keys are kept out of source control. If we learn of unauthorised access to your data, we will tell affected
+members and Discord promptly.</p>
+
+<h2>7. Your rights</h2>
+<p>You can ask for a copy or deletion of your data by opening a support ticket in the server. We reply within 30 days. Deletion
+removes your message text and replaces your Discord ID with a random token, so ticket statistics stay
+correct but can no longer be linked to you. Messages already delivered to Telegram cannot be recalled.</p>
+
+<h2>8. Children</h2>
+<p>The bot follows Discord's minimum age. We do not knowingly process data of users under that age.</p>
+
+<h2>9. Changes</h2>
+<p>Updates are posted on this page with a new date and announced in the server.</p>
+</main>
+</body>
+</html>
