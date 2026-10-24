@@ -27,7 +27,9 @@
 
 <h2>1. Who runs this bot</h2>
 <p>The KS Support Analytics bot is run by the community team of the "Kyber Network Official" Discord
-server, led by the community moderator.
+server, led by the community moderator. This policy covers both Discord applications that make up the
+bot: <b>Analyze Bot</b> (application ID 1474841004959076472) and <b>KS_Community_Backup</b>
+(application ID 1559480430594367488). They do the same job and store data in the same place.
 It is a community tool, not a commercial product: it is installed only in this one server, is not offered
 publicly and cannot be added to other servers.</p>
 <p>The bot runs on the moderator's personal computer and uses an internal AI gateway (details in section 4). Only the community team uses the data it collects.</p>
@@ -42,32 +44,47 @@ publicly and cannot be added to other servers.</p>
       excerpt of the user's messages (up to 2,000 characters).</li>
   <li>In a small list of public community channels: the last 24 hours of messages, read only to produce
       an anonymised daily summary. Raw community messages are not stored.</li>
+  <li>While a ticket is waiting for a staff reply: the member's latest message in that ticket, so we can
+      tell a new question from a closing "thank you". It is cleared as soon as staff reply.</li>
+  <li>Ticket transcripts that Ticket Tool saves in our staff-only archive channel: read to judge whether
+      the member's issue was resolved. We store a satisfaction label, a score and up to four short notes,
+      which can quote the member.</li>
+  <li>A lookup table of short messages (up to 200 characters, with links, wallet addresses and mentions
+      removed) and whether each one needs a reply, so the same short message is not sent to the AI twice.
+      It holds no user IDs.</li>
   <li>Counts of support staff messages per community channel.</li>
 </ul>
-<p>We do not collect presence, direct messages, IP addresses, email addresses or wallet data, and we do
-not request the Server Members intent.</p>
+<p>We do not collect presence, direct messages, IP addresses or email addresses, and we do not request the
+Server Members intent. We never ask for wallet details; if a member writes a wallet address in a ticket,
+it is stored only as part of that message text.</p>
 
 <h2>3. Why we use it</h2>
 <p>To serve and support our community better. Concretely, we measure response time and quality
 (first response time, SLA breaches, who handled and closed a ticket), assign each ticket one product
-category, and produce internal reports for the support team. We do not use the data for advertising,
+category, tell whether a member's latest message still needs a reply, judge whether a closed ticket was
+resolved to the member's satisfaction, and produce internal reports for the support team. Staff can also
+search these records with an internal question-and-answer tool. We do not use the data for advertising,
 profiling of members, or sale, and we do not use it to train machine-learning or AI models.</p>
 <p>We process this data on the basis of our legitimate interest in providing good support to members of
 our Discord community.</p>
 
 <h2>4. Who we share it with</h2>
 <ul>
-  <li>Amazon Web Services (Amazon Bedrock), reached through an internal AI gateway —
-      receives ticket text to return a category label, and community messages (with usernames replaced by
-      anonymous IDs such as user_1) to return a summary. Bedrock does not use inputs or outputs to train
-      models.</li>
+  <li>Amazon Web Services (Amazon Bedrock, model Claude Sonnet), reached through an internal AI gateway —
+      the only AI service that receives message text. It receives ticket text to return a category label,
+      whether a message needs a reply, a satisfaction label, and answers to staff questions; and community
+      messages (with usernames replaced by anonymous IDs such as user_1) to return a summary. Bedrock does
+      not use inputs or outputs to train models.</li>
+  <li>Google (Gemini embeddings) — builds the search index for the internal question-and-answer tool. It
+      receives only ticket labels (ticket number, category, staff member, satisfaction label), public
+      KyberSwap documentation and staff search questions — never member message text.</li>
   <li>Telegram — internal reports and alerts for the support team. An alert for a ticket waiting over
       15 minutes can include the user's first ticket message.</li>
   <li>Hosting: the moderator's personal computer, with FileVault full-disk encryption.</li>
 </ul>
 <p>These providers may process data outside your country. We only use providers bound by written
-data-processing terms. Public dashboards contain aggregated numbers and ticket numbers only, never message
-text or user IDs.</p>
+data-processing terms. Public dashboards contain aggregated numbers, ticket numbers, staff names and anonymised
+community summaries only — never member message text, usernames or user IDs.</p>
 
 <h2>5. How long we keep it</h2>
 <ul>
@@ -93,6 +110,7 @@ correct but can no longer be linked to you. Messages already delivered to Telegr
 
 <h2>9. Changes</h2>
 <p>Updates are posted on this page with a new date and announced in the server.</p>
+<p class="meta">See also: <a href="../terms/">Terms of Service</a>.</p>
 </main>
 </body>
 </html>
